@@ -1,0 +1,83 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "cmip-climate-data-explorer"
+version = "0.3.0"
+description = "Windows desktop application for CMIP data download and NetCDF-to-GeoTIFF processing"
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+license = { text = "Apache-2.0" }
+authors = [{ name = "CMIP Climate Data Explorer contributors" }]
+
+dependencies = [
+  "PySide6>=6.8,<6.11",
+  "SQLAlchemy>=2.0,<2.1",
+  "alembic>=1.14,<2",
+  "pydantic>=2.10,<3",
+  "platformdirs>=4.3,<5",
+  "httpx[http2]>=0.28,<1",
+  "pystac-client>=0.9,<1",
+  "rapidfuzz>=3.10,<4",
+  "numpy>=2.1,<2.5",
+  "scipy>=1.14,<2",
+  "pandas>=2.2,<3",
+  "xarray>=2025.1,<2027",
+  "dask[array]>=2025.1,<2027",
+  "cftime>=1.6,<2",
+  "netCDF4>=1.7,<2",
+  "h5netcdf>=1.4,<2",
+  "h5py>=3.12,<4",
+  "pydap>=3.5,<4",
+  "zarr>=3.0,<4",
+  "pint>=0.24,<1",
+  "pint-xarray>=0.5,<1",
+  "shapely>=2.0,<3",
+  "pyproj>=3.7,<4",
+  "fiona>=1.10,<2",
+  "rasterio>=1.4,<2",
+  "pyresample>=1.31,<2",
+]
+
+[project.urls]
+Repository = "https://github.com/NOOB304/cmip-climate-data-explorer"
+Releases = "https://github.com/NOOB304/cmip-climate-data-explorer/releases"
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.3,<9",
+  "pytest-asyncio>=0.25,<1",
+  "pytest-cov>=6,<8",
+  "pytest-qt>=4.4,<5",
+  "respx>=0.22,<1",
+  "ruff>=0.9,<1",
+  "mypy>=1.14,<2",
+  "PyInstaller>=6.11,<7",
+]
+
+[project.scripts]
+cmip-climate-explorer = "cmip_explorer.app:main"
+cmip-explorer-worker = "cmip_explorer.workers.main:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/cmip_explorer"]
+
+[tool.pytest.ini_options]
+addopts = "-ra --strict-markers"
+testpaths = ["tests"]
+asyncio_mode = "auto"
+markers = [
+  "live: low-load tests against external services",
+  "e2e: end-to-end desktop tests",
+]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
+
+[tool.ruff.lint.per-file-ignores]
+"src/cmip_explorer/ui/**/*.py" = ["RUF001"]

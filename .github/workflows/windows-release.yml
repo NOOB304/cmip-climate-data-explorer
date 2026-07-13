@@ -1,0 +1,48 @@
+name: Windows release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build-release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install Inno Setup
+        shell: powershell
+        run: choco install innosetup --yes --no-progress
+
+      - name: Install project
+        shell: powershell
+        run: |
+          python -m venv .venv
+          .\.venv\Scripts\python.exe -m pip install --upgrade pip
+          .\.venv\Scripts\python.exe -m pip install -e ".[dev]"
+
+      - name: Build and test
+        shell: powershell
+        run: .\tools\build_windows.ps1
+
+      - name: Publish GitHub Release
+        shell: powershell
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $version = "${{ github.ref_name }}".TrimStart("v")
+          gh release create "${{ github.ref_name }}" `
+            "build\installer\CMIP-Climate-Explorer-$version-x64-Setup.exe" `
+            "build\CMIP-Climate-Explorer-$version-x64-portable.zip" `
+            "build\SHA256SUMS.txt" `
+            --title "CMIP Climate Explorer $version" `
+            --generate-notes
