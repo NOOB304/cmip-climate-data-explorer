@@ -154,7 +154,7 @@ class SettingsPage(QWidget):
             self,
             "发现新版本",
             f"当前版本: {__version__}\n最新版本: {release.version}{size}\n\n"
-            "是否下载并安装？",
+            "是否下载更新？更新完成后软件会自动重启。",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.Yes,
         )
@@ -162,7 +162,7 @@ class SettingsPage(QWidget):
             self._download_update(release)
 
     def _download_update(self, release: ReleaseInfo) -> None:
-        self._set_update_busy(f"正在下载并校验 {release.version} 安装包…")
+        self._set_update_busy(f"正在下载并校验 {release.version} 更新包…")
         channel = str(self.update_channel.currentData())
 
         async def download() -> Path:
@@ -179,19 +179,25 @@ class SettingsPage(QWidget):
 
     def _update_downloaded(self, installer: Path) -> None:
         self._set_update_idle()
-        self.update_status.setText(f"安装包校验通过: {installer.name}")
+        self.update_status.setText(f"更新包校验通过: {installer.name}")
         QMessageBox.information(
             self,
-            "准备安装更新",
-            "安装包已经通过 SHA-256 校验。软件将关闭并启动安装程序，"
-            "升级会沿用原安装目录和现有数据。",
+            "准备更新",
+            "更新包已经通过 SHA-256 校验。软件将自动关闭，后台完成更新后"
+            "自动重新打开；安装位置和现有数据不会改变。",
         )
         result = QProcess.startDetached(
-            str(installer), ["/SP-", "/CLOSEAPPLICATIONS"]
+            str(installer),
+            [
+                "/VERYSILENT",
+                "/NORESTART",
+                "/CLOSEAPPLICATIONS",
+                "/UPDATE=1",
+            ],
         )
         started = result[0] if isinstance(result, tuple) else bool(result)
         if not started:
-            QMessageBox.critical(self, "软件更新", "无法启动安装程序。")
+            QMessageBox.critical(self, "软件更新", "无法启动后台更新程序。")
             return
         QTimer.singleShot(500, QApplication.quit)
 

@@ -1,5 +1,5 @@
 #define MyAppName "CMIP Climate Explorer"
-#define MyAppVersion "0.3.2"
+#define MyAppVersion "0.3.3"
 #define MyAppPublisher "CMIP Climate Explorer contributors"
 #define MyAppExeName "CMIPClimateExplorer.exe"
 
@@ -43,9 +43,71 @@ Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
 Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
 
 [Run]
-Filename: "{app}\{#MyAppExeName}"; Description: "启动 {#MyAppName}"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\{#MyAppExeName}"; Description: "启动 {#MyAppName}"; Flags: nowait postinstall skipifsilent; Check: IsNotUpdateMode
+Filename: "{app}\{#MyAppExeName}"; Flags: nowait; Check: IsUpdateMode
 
 [Code]
+function IsUpdateMode(): Boolean;
+begin
+  Result := CompareText(ExpandConstant('{param:UPDATE|0}'), '1') = 0;
+end;
+
+function IsNotUpdateMode(): Boolean;
+begin
+  Result := not IsUpdateMode();
+end;
+
+function HasCommandLineSwitch(const SwitchName: String): Boolean;
+var
+  Index: Integer;
+begin
+  Result := False;
+  for Index := 1 to ParamCount do
+  begin
+    if CompareText(ParamStr(Index), SwitchName) = 0 then
+    begin
+      Result := True;
+      Exit;
+    end;
+  end;
+end;
+
+function InitializeSetup(): Boolean;
+var
+  BridgePath: String;
+  BridgeScript: String;
+  ErrorCode: Integer;
+begin
+  Result := True;
+
+  { Versions up to 0.3.2 launched updates without a silent switch. Relaunch this
+    installer in update mode so the first automatic upgrade is seamless too. }
+  if HasCommandLineSwitch('/CLOSEAPPLICATIONS') and
+     (not WizardSilent()) and
+     (not IsUpdateMode()) then
+  begin
+    BridgePath := AddBackslash(GetTempDir()) + 'CMIPClimateExplorerUpdate.cmd';
+    BridgeScript :=
+      '@echo off' + #13#10 +
+      'ping 127.0.0.1 -n 3 >nul' + #13#10 +
+      '"' + ExpandConstant('{srcexe}') +
+      '" /VERYSILENT /NORESTART /CLOSEAPPLICATIONS /UPDATE=1' + #13#10 +
+      'del "%~f0"' + #13#10;
+    if (not SaveStringToFile(BridgePath, BridgeScript, False)) or
+       (not ShellExec(
+         '',
+         ExpandConstant('{cmd}'),
+         '/D /C ""' + BridgePath + '""',
+         '',
+         SW_HIDE,
+         ewNoWait,
+         ErrorCode
+       )) then
+      MsgBox('无法启动后台更新程序。', mbError, MB_OK);
+    Result := False;
+  end;
+end;
+
 function GetDefaultInstallDir(Param: String): String;
 begin
   if DirExists('D:\') then

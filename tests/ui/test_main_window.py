@@ -1,9 +1,11 @@
 from pathlib import Path
+from types import SimpleNamespace
 from uuid import uuid4
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QMessageBox, QProgressBar
 
+import cmip_explorer.ui.pages.settings as settings_module
 from cmip_explorer.application import WorkflowService
 from cmip_explorer.config import AppPaths
 from cmip_explorer.domain.enums import DownloadMode
@@ -51,8 +53,64 @@ def test_main_window_contains_complete_workbench_navigation(qtbot, tmp_path: Pat
     )
     settings_page = window.stack.widget(5)
     assert settings_page.update_button.text() == "检查更新"
-    assert settings_page.version_label.text() == "当前版本 0.3.2"
+    assert settings_page.version_label.text() == "当前版本 0.3.3"
     assert window.minimumWidth() >= 1180
+    database.dispose()
+
+
+def test_verified_update_runs_silently_and_restarts_application(
+    qtbot, tmp_path: Path, monkeypatch
+) -> None:
+    paths = AppPaths(
+        data=tmp_path / "data",
+        cache=tmp_path / "cache",
+        logs=tmp_path / "logs",
+        outputs=tmp_path / "outputs",
+        database=tmp_path / "data" / "app.db",
+        catalog=tmp_path / "data" / "catalog.db",
+    )
+    paths.ensure()
+    install_packaged_catalog(paths.catalog)
+    database = Database(paths.database)
+    database.initialize()
+    repository = TaskRepository(database)
+    window = MainWindow(paths, repository, WorkflowService(paths, repository))
+    qtbot.addWidget(window)
+    settings_page = window.stack.widget(5)
+    started: list[tuple[str, list[str]]] = []
+    timers: list[tuple[int, object]] = []
+    monkeypatch.setattr(QMessageBox, "information", lambda *_args: None)
+    monkeypatch.setattr(
+        settings_module,
+        "QProcess",
+        SimpleNamespace(
+            startDetached=lambda program, args: (
+                started.append((program, args)) is None,
+                123,
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        settings_module,
+        "QTimer",
+        SimpleNamespace(singleShot=lambda delay, callback: timers.append((delay, callback))),
+    )
+
+    installer = tmp_path / "CMIP-Climate-Explorer-0.3.3-x64-Setup.exe"
+    settings_page._update_downloaded(installer)
+
+    assert started == [
+        (
+            str(installer),
+            [
+                "/VERYSILENT",
+                "/NORESTART",
+                "/CLOSEAPPLICATIONS",
+                "/UPDATE=1",
+            ],
+        )
+    ]
+    assert timers and timers[0][0] == 500
     database.dispose()
 
 

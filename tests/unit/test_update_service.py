@@ -113,3 +113,16 @@ async def test_update_service_rejects_release_without_checksum() -> None:
         )
         with pytest.raises(UpdateError, match="没有可验证"):
             await updater.check()
+
+
+def test_installer_supports_silent_update_and_old_updater_bridge() -> None:
+    installer_script = (
+        Path(__file__).parents[2] / "packaging" / "installer.iss"
+    ).read_text(encoding="utf-8")
+
+    assert "HasCommandLineSwitch('/CLOSEAPPLICATIONS')" in installer_script
+    assert "/VERYSILENT /NORESTART /CLOSEAPPLICATIONS /UPDATE=1" in installer_script
+    assert "ExpandConstant('{srcexe}')" in installer_script
+    assert "CMIPClimateExplorerUpdate.cmd" in installer_script
+    assert 'Flags: nowait; Check: IsUpdateMode' in installer_script
+    assert "skipifsilent; Check: IsNotUpdateMode" in installer_script
