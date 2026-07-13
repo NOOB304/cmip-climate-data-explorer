@@ -9,6 +9,12 @@ QWidget {
 QMainWindow, QStackedWidget, QScrollArea, QScrollArea > QWidget > QWidget {
     background: #f4f6f7;
 }
+QLabel {
+    background: transparent;
+}
+QWidget#SectionBody {
+    background: transparent;
+}
 QFrame#Sidebar {
     background: #19262c;
     border: 0;
@@ -106,6 +112,21 @@ QFrame#Panel, QFrame#FilterPanel, QFrame#MetricStrip, QFrame#DetailsPanel {
     border: 1px solid #d9e0e3;
     border-radius: 6px;
 }
+QFrame#CompactSection {
+    background: #ffffff;
+    border: 1px solid #d9e0e3;
+    border-radius: 5px;
+}
+QToolButton {
+    color: #223238;
+    background: transparent;
+    border: 0;
+    padding: 4px 2px;
+    font-weight: 600;
+}
+QToolButton:hover {
+    color: #0f777a;
+}
 QFrame#SettingsSection {
     background: transparent;
     border: 0;
@@ -175,6 +196,11 @@ QPushButton#PrimaryButton:hover {
     background: #0e7477;
     border-color: #0e7477;
 }
+QPushButton#PrimaryButton:disabled {
+    color: #8d999e;
+    background: #e7ecee;
+    border-color: #d5dde0;
+}
 QPushButton#DangerButton {
     color: #a43a32;
     background: #fff7f6;
@@ -193,6 +219,11 @@ QPushButton#StopButton {
 }
 QPushButton#StopButton:hover {
     background: #a33830;
+}
+QPushButton#StopButton:disabled {
+    color: #9aa5a9;
+    background: #edf0f1;
+    border-color: #d9e0e3;
 }
 QCheckBox {
     spacing: 7px;

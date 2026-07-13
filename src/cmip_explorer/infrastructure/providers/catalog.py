@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import date
 from typing import Any
 
 import httpx
 from rapidfuzz import fuzz
+
+_CURRENT_YEAR = date.today().year
 
 
 @dataclass(frozen=True, slots=True)
@@ -12,6 +15,11 @@ class ProviderProduct:
     id: str
     name: str
     description: str
+    guide: str = ""
+    start_year: int | None = None
+    end_year: int | None = None
+    default_start_year: int | None = None
+    default_end_year: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -94,6 +102,36 @@ PROVIDERS = (
             ),
         ),
         visible_filters=frozenset({"model", "scenario"}),
+    ),
+    ProviderDefinition(
+        id="openmeteo",
+        name="Open-Meteo",
+        icon_text="OM",
+        icon_color="#087f5b",
+        description="免账号的点位气候数据 API, 可直接下载易于查看的 CSV。",
+        products=(
+            ProviderProduct(
+                "historical",
+                "历史再分析",
+                "ERA5 / ERA5-Land 历史天气估计, 不是未来预估",
+                "适合查看某个经纬度过去的气温、降水和风速; 日尺度 CSV, 近期约延迟 5 天。",
+                1940,
+                _CURRENT_YEAR,
+                2000,
+                _CURRENT_YEAR,
+            ),
+            ProviderProduct(
+                "climate",
+                "CMIP6 局地预估",
+                "7 个 CMIP6 高分辨率模式, 经 ERA5-Land 偏差订正到约 10 km",
+                "适合比较某个经纬度的长期气候变化; 日尺度数据截至 2050-01-01。",
+                1950,
+                2050,
+                2000,
+                2050,
+            ),
+        ),
+        visible_filters=frozenset({"model", "location"}),
     ),
     ProviderDefinition(
         id="power",
@@ -216,6 +254,79 @@ NCEI_HOURLY_VARIABLES = (
 )
 
 
+OPEN_METEO_HISTORICAL_VARIABLES = (
+    ProviderVariable(
+        "temperature_2m_mean", "Mean Temperature (2 m)", "2 米平均气温", "°C", ("气温",)
+    ),
+    ProviderVariable(
+        "temperature_2m_max", "Maximum Temperature (2 m)", "2 米最高气温", "°C"
+    ),
+    ProviderVariable(
+        "temperature_2m_min", "Minimum Temperature (2 m)", "2 米最低气温", "°C"
+    ),
+    ProviderVariable("precipitation_sum", "Precipitation Sum", "总降水量", "mm", ("降雨",)),
+    ProviderVariable("rain_sum", "Rain Sum", "降雨量", "mm"),
+    ProviderVariable("snowfall_sum", "Snowfall Sum", "降雪量", "cm"),
+    ProviderVariable(
+        "wind_speed_10m_max", "Maximum Wind Speed (10 m)", "10 米最大风速", "m/s"
+    ),
+    ProviderVariable(
+        "wind_gusts_10m_max", "Maximum Wind Gusts (10 m)", "10 米最大阵风", "m/s"
+    ),
+    ProviderVariable(
+        "shortwave_radiation_sum", "Shortwave Radiation Sum", "短波辐射总量", "MJ/m²"
+    ),
+    ProviderVariable(
+        "et0_fao_evapotranspiration", "Reference Evapotranspiration", "参考蒸散量", "mm"
+    ),
+)
+
+
+OPEN_METEO_CLIMATE_VARIABLES = (
+    ProviderVariable(
+        "temperature_2m_mean", "Mean Temperature (2 m)", "2 米平均气温", "°C", ("气温",)
+    ),
+    ProviderVariable(
+        "temperature_2m_max", "Maximum Temperature (2 m)", "2 米最高气温", "°C"
+    ),
+    ProviderVariable(
+        "temperature_2m_min", "Minimum Temperature (2 m)", "2 米最低气温", "°C"
+    ),
+    ProviderVariable("precipitation_sum", "Precipitation Sum", "总降水量", "mm", ("降雨",)),
+    ProviderVariable("rain_sum", "Rain Sum", "降雨量", "mm"),
+    ProviderVariable("snowfall_sum", "Snowfall Sum", "降雪量", "cm"),
+    ProviderVariable(
+        "wind_speed_10m_mean", "Mean Wind Speed (10 m)", "10 米平均风速", "m/s"
+    ),
+    ProviderVariable(
+        "wind_speed_10m_max", "Maximum Wind Speed (10 m)", "10 米最大风速", "m/s"
+    ),
+    ProviderVariable("cloud_cover_mean", "Mean Cloud Cover", "平均云量", "%"),
+    ProviderVariable(
+        "relative_humidity_2m_mean",
+        "Mean Relative Humidity (2 m)",
+        "2 米平均相对湿度",
+        "%",
+    ),
+    ProviderVariable(
+        "dew_point_2m_mean", "Mean Dew Point (2 m)", "2 米平均露点温度", "°C"
+    ),
+    ProviderVariable(
+        "shortwave_radiation_sum", "Shortwave Radiation Sum", "短波辐射总量", "MJ/m²"
+    ),
+    ProviderVariable("pressure_msl_mean", "Mean Sea Level Pressure", "平均海平面气压", "hPa"),
+    ProviderVariable(
+        "soil_moisture_0_to_10cm_mean",
+        "Mean Soil Moisture (0-10 cm)",
+        "0-10 厘米平均土壤湿度",
+        "m³/m³",
+    ),
+    ProviderVariable(
+        "et0_fao_evapotranspiration", "Reference Evapotranspiration", "参考蒸散量", "mm"
+    ),
+)
+
+
 CHINESE_NAMES = {
     "air_temperature": "空气温度",
     "capacity_of_soil_to_store_water": "土壤储水能力",
@@ -291,6 +402,12 @@ async def discover_provider_variables(
         if product_id == "global-hourly":
             return NCEI_HOURLY_VARIABLES
         return NCEI_VARIABLES
+    if provider_id == "openmeteo":
+        return (
+            OPEN_METEO_CLIMATE_VARIABLES
+            if product_id == "climate"
+            else OPEN_METEO_HISTORICAL_VARIABLES
+        )
     if provider_id == "cds":
         return await _discover_cds_variables(product_id, client)
     if provider_id == "power":

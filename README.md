@@ -12,11 +12,13 @@ Windows 正式版通过 [GitHub Releases](https://github.com/NOOB304/cmip-climat
 ## 功能
 
 - 通过图标标签切换 ESGF、Copernicus CDS、AWS Open Data、Microsoft
-  Planetary Computer、NASA POWER、NASA Earthdata 和 NOAA NCEI。
+  Planetary Computer、Open-Meteo、NASA POWER、NASA Earthdata 和 NOAA NCEI。
 - 从 ORNL、DKRZ、IPSL、CEDA 等 ESGF 节点分页检索 CMIP6 文件。
 - 新数据源变量目录支持中文名称/别名搜索；API 新增且尚未翻译的变量保留英文。
 - Planetary Computer、AWS、POWER 与 NCEI 结果可进入现有下载任务；CDS 和
   Earthdata 受保护数据会明确显示账号授权要求并提供官方来源入口。
+- Open-Meteo 提供免账号的 ERA5 / ERA5-Land 历史再分析，以及 7 个偏差订正后的
+  CMIP6 局地模式；界面明确区分“过去天气估计”和“未来气候预估”。
 - 变量、模型、情景、数据表、频率和网格均使用联动下拉选择。
 - 查询年份按时间范围是否相交匹配，例如查询 2020-2100 会显示覆盖 2000-2100 的文件。
 - 支持断点续传、同任务自动重连、镜像切换、校验和验证和可见的任务进度。

@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
     QStyle,
     QTableWidget,
     QTableWidgetItem,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -77,8 +78,8 @@ class ProcessingPage(QWidget):
         scroll.setFrameShape(QFrame.Shape.NoFrame)
         content = QWidget()
         root = QVBoxLayout(content)
-        root.setContentsMargins(24, 20, 24, 18)
-        root.setSpacing(10)
+        root.setContentsMargins(24, 16, 24, 14)
+        root.setSpacing(8)
         scroll.setWidget(content)
         outer.addWidget(scroll)
         title = QLabel("文件处理")
@@ -92,7 +93,7 @@ class ProcessingPage(QWidget):
         folder_row.addWidget(QLabel("下载目录"))
         self.source = QLineEdit(str(self.source_root))
         self.source.setReadOnly(True)
-        refresh = QPushButton("扫描已下载数据")
+        refresh = QPushButton("刷新数据")
         refresh.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_BrowserReload))
         refresh.clicked.connect(self._scan_folder)
         self.scan_button = refresh
@@ -125,8 +126,8 @@ class ProcessingPage(QWidget):
         header.setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
         header.setSectionResizeMode(5, QHeaderView.ResizeMode.ResizeToContents)
         header.setSectionResizeMode(6, QHeaderView.ResizeMode.ResizeToContents)
-        self.group_table.setMinimumHeight(190)
-        self.group_table.setMaximumHeight(270)
+        self.group_table.setMinimumHeight(145)
+        self.group_table.setMaximumHeight(210)
         root.addWidget(self.group_table)
 
         options = QFrame()
@@ -135,21 +136,23 @@ class ProcessingPage(QWidget):
         options_layout.setContentsMargins(14, 12, 14, 14)
         options_layout.setSpacing(18)
         time_section = QWidget()
+        time_section.setObjectName("SectionBody")
         time_layout = QVBoxLayout(time_section)
         time_layout.setContentsMargins(0, 0, 0, 0)
         time_title = QLabel("时间合成与单位")
         time_title.setObjectName("SectionTitle")
         time_form = QFormLayout()
-        time_form.setVerticalSpacing(8)
+        time_form.setVerticalSpacing(5)
         time_layout.addWidget(time_title)
         time_layout.addLayout(time_form)
         spatial_section = QWidget()
+        spatial_section.setObjectName("SectionBody")
         spatial_layout = QVBoxLayout(spatial_section)
         spatial_layout.setContentsMargins(0, 0, 0, 0)
         spatial_title = QLabel("空间重采样与裁剪")
         spatial_title.setObjectName("SectionTitle")
         spatial_form = QFormLayout()
-        spatial_form.setVerticalSpacing(8)
+        spatial_form.setVerticalSpacing(5)
         spatial_layout.addWidget(spatial_title)
         spatial_layout.addLayout(spatial_form)
         self.variable = QComboBox()
@@ -227,19 +230,45 @@ class ProcessingPage(QWidget):
         options_layout.addWidget(spatial_section, 1)
         root.addWidget(options)
 
-        self.month_panel = QWidget()
+        self.month_panel = QFrame()
+        self.month_panel.setObjectName("CompactSection")
         month_layout = QVBoxLayout(self.month_panel)
-        month_title = QLabel("处理月份")
-        month_title.setObjectName("SectionTitle")
-        month_layout.addWidget(month_title)
+        month_layout.setContentsMargins(10, 6, 10, 8)
+        month_layout.setSpacing(5)
+        self.month_toggle = QToolButton()
+        self.month_toggle.setText("处理月份：已选 12 个月")
+        self.month_toggle.setCheckable(True)
+        self.month_toggle.setChecked(False)
+        self.month_toggle.setArrowType(Qt.ArrowType.RightArrow)
+        self.month_toggle.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        self.month_toggle.toggled.connect(self._month_panel_toggled)
+        month_layout.addWidget(self.month_toggle)
+        self.month_body = QWidget()
+        body_layout = QVBoxLayout(self.month_body)
+        body_layout.setContentsMargins(22, 0, 0, 0)
+        body_layout.setSpacing(4)
         grid = QGridLayout()
+        grid.setHorizontalSpacing(18)
+        grid.setVerticalSpacing(3)
         self.months: list[QCheckBox] = []
         for index in range(12):
             checkbox = QCheckBox(f"{index + 1} 月")
             checkbox.setChecked(True)
+            checkbox.toggled.connect(self._update_month_summary)
             self.months.append(checkbox)
             grid.addWidget(checkbox, index // 6, index % 6)
-        month_layout.addLayout(grid)
+        quick_actions = QHBoxLayout()
+        select_all = QPushButton("全选")
+        select_all.clicked.connect(lambda: self._set_all_months(True))
+        clear_all = QPushButton("清空")
+        clear_all.clicked.connect(lambda: self._set_all_months(False))
+        quick_actions.addWidget(select_all)
+        quick_actions.addWidget(clear_all)
+        quick_actions.addStretch(1)
+        body_layout.addLayout(grid)
+        body_layout.addLayout(quick_actions)
+        self.month_body.hide()
+        month_layout.addWidget(self.month_body)
         self.month_panel.hide()
         root.addWidget(self.month_panel)
 
@@ -286,6 +315,9 @@ class ProcessingPage(QWidget):
         self.output.setText(str(root / "Processed"))
         self._scan_folder()
 
+    def refresh_data(self) -> None:
+        self._scan_folder()
+
     def _choose_folder(self) -> None:
         path = QFileDialog.getExistingDirectory(
             self,
@@ -306,6 +338,14 @@ class ProcessingPage(QWidget):
         self.group = None
         self.groups = []
         self.group_table.setRowCount(0)
+        self.variable.clear()
+        self.variable.setEnabled(False)
+        self.target_period.clear()
+        self.target_period.setEnabled(False)
+        self.method.clear()
+        self.method.setEnabled(False)
+        self.detected.setText("正在刷新已下载数据…")
+        self.month_panel.hide()
         self.process_button.setEnabled(False)
         self.scan_button.setEnabled(False)
         self.scan_status.setText("正在扫描 NC 文件并读取变量、频率和时间范围…")
@@ -424,6 +464,21 @@ class ProcessingPage(QWidget):
             self.resampling_method.setCurrentIndex(nearest)
         if not self._processing:
             self._reset_progress()
+
+    def _month_panel_toggled(self, expanded: bool) -> None:
+        self.month_body.setVisible(expanded)
+        self.month_toggle.setArrowType(
+            Qt.ArrowType.DownArrow if expanded else Qt.ArrowType.RightArrow
+        )
+
+    def _update_month_summary(self) -> None:
+        count = sum(item.isChecked() for item in self.months)
+        self.month_toggle.setText(f"处理月份：已选 {count} 个月")
+
+    def _set_all_months(self, checked: bool) -> None:
+        for month in self.months:
+            month.setChecked(checked)
+        self._update_month_summary()
 
     def _configure_unit_conversion(self, group: LocalDatasetGroup) -> None:
         target = automatic_unit_target(group.variable_id, group.units, group.standard_name)

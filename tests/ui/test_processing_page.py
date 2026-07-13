@@ -162,6 +162,40 @@ def test_selecting_another_group_resets_progress_and_updates_output_path(
     assert page.unit_conversion.isEnabled()
 
 
+def test_processing_months_are_collapsed_and_refresh_removes_deleted_data(
+    qtbot, tmp_path: Path
+) -> None:
+    path = _write_downloaded(
+        tmp_path,
+        "tas_day.nc",
+        "tas",
+        pd.date_range("2020-01-01", periods=2, freq="D"),
+        np.full(2, 280.0, dtype="float32"),
+        "day",
+        "K",
+    )
+    page = ProcessingPage(ApplicationState(), tmp_path)
+    qtbot.addWidget(page)
+    page.show()
+    qtbot.waitUntil(lambda: len(page.groups) == 1, timeout=15_000)
+
+    assert page.month_panel.isVisible()
+    assert not page.month_body.isVisible()
+    assert page.month_toggle.text().startswith("处理月份")
+    assert page.month_toggle.text().endswith("已选 12 个月")
+
+    path.unlink()
+    page.refresh_data()
+    qtbot.waitUntil(
+        lambda: not page.groups and "没有可处理" in page.detected.text(),
+        timeout=15_000,
+    )
+
+    assert page.group_table.rowCount() == 0
+    assert not page.variable.isEnabled()
+    assert "没有可处理" in page.detected.text()
+
+
 def test_resampling_and_vector_upload_controls_are_directly_usable(
     qtbot, tmp_path: Path, monkeypatch
 ) -> None:

@@ -12,6 +12,7 @@ from cmip_explorer.domain.models import (
 from cmip_explorer.infrastructure.search.provider_backends import (
     NexStacBackend,
     NoaaNceiBackend,
+    OpenMeteoBackend,
     PowerBackend,
 )
 
@@ -179,3 +180,52 @@ async def test_generated_api_backends_create_direct_csv_downloads() -> None:
     assert "latitude=39.9" in power_url
     assert "dataset=daily-summaries" in noaa_url
     assert "stations=USW00094728" in noaa_url
+
+
+async def test_open_meteo_generates_one_beginner_friendly_csv_per_model() -> None:
+    backend = OpenMeteoBackend(_definition("openmeteo", "https://open-meteo.test"))
+    try:
+        page = await backend.search(
+            SearchRequest(
+                provider_id="openmeteo",
+                product_id="climate",
+                facets=(
+                    FacetConstraint(
+                        name="variable_id", values=("temperature_2m_mean",)
+                    ),
+                    FacetConstraint(name="source_id", values=("MRI_AGCM3_2_S",)),
+                ),
+                start_year=2000,
+                end_year=2050,
+                parameters={"latitude": "39.9", "longitude": "116.4"},
+            )
+        )
+    finally:
+        await backend.close()
+
+    assert len(page.files) == 1
+    file = page.files[0]
+    assert file.source_id == "MRI_AGCM3_2_S"
+    assert file.nominal_resolution == "约 10 km"
+    assert file.temporal.start == "2000-01-01"
+    assert file.temporal.end == "2050-01-01"
+    url = file.replicas[0].endpoints[0].url
+    assert url.startswith("https://climate-api.open-meteo.com/v1/climate?")
+    assert "daily=temperature_2m_mean" in url
+    assert "models=MRI_AGCM3_2_S" in url
+    assert "end_date=2050-01-01" in url
+    assert "format=csv" in url
+
+
+async def test_open_meteo_historical_facets_explain_era5_model_choices() -> None:
+    backend = OpenMeteoBackend(_definition("openmeteo", "https://open-meteo.test"))
+    try:
+        facets = await backend.facets(
+            SearchRequest(provider_id="openmeteo", product_id="historical"),
+            ("source_id", "frequency"),
+        )
+    finally:
+        await backend.close()
+
+    assert set(facets["source_id"]) == {"era5", "era5_land"}
+    assert facets["frequency"] == {"day": 2}

@@ -339,6 +339,7 @@ try {
         Start-Sleep -Milliseconds 250
     }
     $installerArguments = @(
+        '/SP-',
         '/VERYSILENT',
         '/SUPPRESSMSGBOXES',
         '/NORESTART',

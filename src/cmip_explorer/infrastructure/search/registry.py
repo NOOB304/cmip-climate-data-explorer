@@ -12,6 +12,7 @@ from .provider_backends import (
     CmrBackend,
     NexStacBackend,
     NoaaNceiBackend,
+    OpenMeteoBackend,
     PowerBackend,
 )
 
@@ -102,7 +103,7 @@ def default_registry(provider_id: str = "esgf") -> BackendRegistry:
 def _provider_registry(provider_id: str) -> BackendRegistry:
     capabilities = BackendCapabilities(
         distributed_search=False,
-        facets=provider_id in {"cds", "aws", "planetary"},
+        facets=provider_id in {"cds", "aws", "planetary", "openmeteo"},
         fields_parameter=False,
         replica_filter=False,
         temporal_filter=True,
@@ -142,6 +143,14 @@ def _provider_registry(provider_id: str) -> BackendRegistry:
             priority=10,
             capabilities=capabilities,
         ),
+        "openmeteo": Backend(
+            id="openmeteo",
+            name="Open-Meteo",
+            kind=BackendKind.GENERATED_API,
+            base_url="https://open-meteo.com",
+            priority=10,
+            capabilities=capabilities,
+        ),
         "cmr": Backend(
             id="cmr",
             name="NASA Earthdata CMR",
@@ -169,6 +178,8 @@ def _provider_registry(provider_id: str) -> BackendRegistry:
         backend = NexStacBackend(definition, asset_source=provider_id)
     elif provider_id == "power":
         backend = PowerBackend(definition)
+    elif provider_id == "openmeteo":
+        backend = OpenMeteoBackend(definition)
     elif provider_id == "cmr":
         backend = CmrBackend(definition)
     else:

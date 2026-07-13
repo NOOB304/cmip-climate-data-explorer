@@ -50,7 +50,8 @@ def test_local_data_is_grouped_and_checked_groups_can_be_deleted(
         lambda *_args: QMessageBox.StandardButton.Yes,
     )
 
-    page._delete()
+    with qtbot.waitSignal(page.data_changed):
+        page._delete()
 
     assert not processed.exists()
     assert downloaded.exists()

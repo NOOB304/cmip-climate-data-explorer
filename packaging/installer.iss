@@ -1,5 +1,5 @@
 #define MyAppName "CMIP Climate Explorer"
-#define MyAppVersion "0.4.2"
+#define MyAppVersion "0.5.0"
 #define MyAppPublisher "CMIP Climate Explorer contributors"
 #define MyAppExeName "CMIPClimateExplorer.exe"
 
@@ -97,7 +97,7 @@ begin
       '@echo off' + #13#10 +
       'ping 127.0.0.1 -n 4 >nul' + #13#10 +
       '"' + ExpandConstant('{srcexe}') +
-      '" /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /CLOSEAPPLICATIONS ' +
+      '" /SP- /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /CLOSEAPPLICATIONS ' +
       '/FORCECLOSEAPPLICATIONS /UPDATE=1 /STAGEDUPDATE=1' + #13#10 +
       'del "%~f0"' + #13#10;
     if (not SaveStringToFile(BridgePath, BridgeScript, False)) or

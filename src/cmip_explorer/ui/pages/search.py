@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import csv
+import re
+from datetime import UTC, datetime
 from pathlib import Path
 from uuid import UUID
 
@@ -322,6 +324,7 @@ class SearchPage(QWidget):
                 Qt.ItemDataRole.ToolTipRole,
             )
         self.product.blockSignals(False)
+        self._apply_product_settings()
         self._reset_filter_values()
         self._set_filter_visibility(provider.visible_filters)
         self._reset_results(f"已切换到 {provider.name}，请选择变量后查询。")
@@ -335,22 +338,30 @@ class SearchPage(QWidget):
     def _product_changed(self) -> None:
         if self._provider_id == "esgf":
             return
-        product_id = str(self.product.currentData() or "")
-        product = next(
-            (
-                item
-                for item in provider_definition(self._provider_id).products
-                if item.id == product_id
-            ),
-            None,
-        )
-        if product:
-            self.provider_info.setText(
-                f"{provider_definition(self._provider_id).description}  {product.description}"
-            )
+        self._apply_product_settings()
         self._reset_results("数据产品已切换，请重新选择变量。")
         self._reset_filter_values()
         self._load_provider_variables()
+
+    def _apply_product_settings(self) -> None:
+        provider = provider_definition(self._provider_id)
+        product_id = str(self.product.currentData() or "")
+        product = next((item for item in provider.products if item.id == product_id), None)
+        if product is None:
+            self.provider_info.setText(provider.description)
+            return
+        details = [provider.description, product.description]
+        if product.guide:
+            details.append(product.guide)
+        self.provider_info.setText("  ".join(details))
+        if product.start_year is None or product.end_year is None:
+            self.start_year.setRange(1, 9999)
+            self.end_year.setRange(1, 9999)
+            return
+        self.start_year.setRange(product.start_year, product.end_year)
+        self.end_year.setRange(product.start_year, product.end_year)
+        self.start_year.setValue(product.default_start_year or product.start_year)
+        self.end_year.setValue(product.default_end_year or product.end_year)
 
     def _reset_filter_values(self) -> None:
         self._populating = True
@@ -751,7 +762,7 @@ class SearchPage(QWidget):
             values = (
                 name,
                 file.variable_id or "-",
-                file.source_id or "-",
+                _model_label(file.source_id or "-"),
                 file.nominal_resolution or _grid_resolution(file.grid_label),
                 _scenario_label(file.experiment_id or "-"),
                 _frequency_label(file.frequency or file.table_id or "-"),
@@ -766,7 +777,12 @@ class SearchPage(QWidget):
                 item = QTableWidgetItem(value)
                 item.setData(Qt.ItemDataRole.UserRole, file.logical_key)
                 item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
-                item.setToolTip(str(value))
+                if column == 8:
+                    raw_start = file.temporal.start or "未提供"
+                    raw_end = file.temporal.end or "未提供"
+                    item.setToolTip(f"原始时间范围\n{raw_start}\n至\n{raw_end}")
+                else:
+                    item.setToolTip(str(value))
                 self.table_widget.setItem(row, column, item)
         self.table_widget.setSortingEnabled(True)
         self.table_widget.blockSignals(False)
@@ -988,6 +1004,8 @@ class SearchPage(QWidget):
                     elif name == "frequency":
                         friendly = _frequency_label(value)
                         label = f"{friendly} ({value})" if friendly != value else value
+                    elif name == "source_id":
+                        label = _model_label(value)
                     else:
                         label = value
                     count = facets.get(name, {}).get(value)
@@ -1047,7 +1065,40 @@ class SearchPage(QWidget):
 
 
 def _coverage(file: LogicalFile) -> str:
-    return f"{file.temporal.start or '?'} - {file.temporal.end or '?'}"
+    start = _format_temporal(file.temporal.start, file.frequency)
+    end = _format_temporal(file.temporal.end, file.frequency)
+    if start == "未知" and end == "未知":
+        return "时间范围未提供"
+    return f"{start} 至 {end}"
+
+
+def _format_temporal(value: str | None, frequency: str | None = None) -> str:
+    text = str(value or "").strip()
+    if not text or text.casefold() in {"?", "none", "null", "nat", "nan", "?-?"}:
+        return "未知"
+    if re.fullmatch(r"\d{10}|\d{13}", text):
+        timestamp = int(text) / (1000 if len(text) == 13 else 1)
+        try:
+            return datetime.fromtimestamp(timestamp, tz=UTC).strftime("%Y-%m-%d")
+        except (OverflowError, OSError, ValueError):
+            pass
+    compact = re.fullmatch(r"(\d{4})(\d{2})?(\d{2})?(\d{2})?(\d{2})?(\d{2})?", text)
+    if compact:
+        parts = compact.groups(default="")
+        if not parts[1]:
+            return parts[0]
+        result = f"{parts[0]}-{parts[1]}"
+        if parts[2]:
+            result += f"-{parts[2]}"
+        if parts[3]:
+            result += f" {parts[3]}:{parts[4] or '00'}"
+        return result
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        subdaily = frequency not in {None, "day", "mon", "Amon", "yr", "annual"}
+        return parsed.strftime("%Y-%m-%d %H:%M" if subdaily else "%Y-%m-%d")
+    except ValueError:
+        return text if len(text) <= 24 else f"{text[:21]}…"
 
 
 def _human_bytes(value: int | None) -> str:
@@ -1081,6 +1132,21 @@ def _scenario_label(value: str) -> str:
         "ssp4_6_0": "SSP4-6.0 (ssp4_6_0)",
         "ssp5_3_4os": "SSP5-3.4 过冲 (ssp5_3_4os)",
         "ssp5_8_5": "SSP5-8.5 极高排放 (ssp5_8_5)",
+    }
+    return labels.get(value, value)
+
+
+def _model_label(value: str) -> str:
+    labels = {
+        "era5": "ERA5 全球再分析",
+        "era5_land": "ERA5-Land 陆面再分析",
+        "CMCC_CM2_VHR4": "CMCC-CM2-VHR4（意大利）",
+        "FGOALS_f3_H": "FGOALS-f3-H（中国）",
+        "HiRAM_SIT_HR": "HiRAM-SIT-HR（中国台湾）",
+        "MRI_AGCM3_2_S": "MRI-AGCM3-2-S（日本）",
+        "EC_Earth3P_HR": "EC-Earth3P-HR（欧洲）",
+        "MPI_ESM1_2_XR": "MPI-ESM1-2-XR（德国）",
+        "NICAM16_8S": "NICAM16-8S（日本）",
     }
     return labels.get(value, value)
 

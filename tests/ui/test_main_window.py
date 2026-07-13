@@ -23,6 +23,7 @@ from cmip_explorer.infrastructure.persistence import Database, TaskRepository
 from cmip_explorer.infrastructure.providers import PROVIDERS, ProviderVariable
 from cmip_explorer.ui import MainWindow
 from cmip_explorer.ui.pages.search import SearchPage as UISearchPage
+from cmip_explorer.ui.pages.search import _coverage
 
 
 def test_main_window_contains_complete_workbench_navigation(qtbot, tmp_path: Path) -> None:
@@ -53,12 +54,56 @@ def test_main_window_contains_complete_workbench_navigation(qtbot, tmp_path: Pat
     )
     settings_page = window.stack.widget(5)
     assert settings_page.update_button.text() == "检查更新"
-    assert settings_page.version_label.text() == "当前版本 0.4.2"
+    assert settings_page.version_label.text() == "当前版本 0.5.0"
     settings_page._show_update_progress(50 * 1024**2, 100 * 1024**2)
     assert settings_page.update_progress.maximum() == 1000
     assert settings_page.update_progress.value() == 500
     assert settings_page.update_progress.format() == "50.0 MiB / 100.0 MiB (50.0%)"
     assert window.minimumWidth() >= 1180
+    database.dispose()
+
+
+def test_log_page_defaults_to_user_operations_and_can_show_details(
+    qtbot, tmp_path: Path
+) -> None:
+    paths = AppPaths(
+        data=tmp_path / "data",
+        cache=tmp_path / "cache",
+        logs=tmp_path / "logs",
+        outputs=tmp_path / "outputs",
+        database=tmp_path / "data" / "app.db",
+        catalog=tmp_path / "data" / "catalog.db",
+    )
+    paths.ensure()
+    install_packaged_catalog(paths.catalog)
+    database = Database(paths.database)
+    database.initialize()
+    repository = TaskRepository(database)
+    window = MainWindow(paths, repository, WorkflowService(paths, repository))
+    qtbot.addWidget(window)
+    window._log_records = [
+        {
+            "timestamp": "2026-07-14T08:00:00+00:00",
+            "level": "INFO",
+            "logger": "cmip_explorer.operations",
+            "message": "已删除本地数据组: D:/data",
+        },
+        {
+            "timestamp": "2026-07-14T08:01:00+00:00",
+            "level": "INFO",
+            "logger": "httpx",
+            "message": "HTTP Request: GET https://example.test",
+        },
+    ]
+    window._render_logs()
+
+    assert window.log_table.columnCount() == 3
+    assert window.log_table.rowCount() == 1
+    assert window.log_table.item(0, 1).text() == "数据管理"
+    window.log_mode_button.setChecked(True)
+    assert window.log_table.columnCount() == 4
+    assert window.log_table.rowCount() == 2
+    assert window.log_mode_button.text() == "返回操作记录"
     database.dispose()
 
 
@@ -100,7 +145,7 @@ def test_verified_update_runs_silently_and_restarts_application(
         SimpleNamespace(singleShot=lambda delay, callback: timers.append((delay, callback))),
     )
 
-    installer = tmp_path / "CMIP-Climate-Explorer-0.4.2-x64-Setup.exe"
+    installer = tmp_path / "CMIP-Climate-Explorer-0.5.0-x64-Setup.exe"
     settings_page._update_downloaded(installer)
 
     assert started == [
@@ -128,6 +173,7 @@ def test_verified_update_runs_silently_and_restarts_application(
     assert timers and timers[0][0] == 100
     launcher_script = (tmp_path / "apply-update.ps1").read_text(encoding="utf-8")
     assert "Get-Process -Id $ParentPid" in launcher_script
+    assert "'/SP-'" in launcher_script
     assert "'/VERYSILENT'" in launcher_script
     assert "'/SUPPRESSMSGBOXES'" in launcher_script
     assert "'/FORCECLOSEAPPLICATIONS'" in launcher_script
@@ -361,7 +407,48 @@ def test_data_source_tabs_switch_provider_specific_controls(
     assert search.latitude.isVisibleTo(search)
     assert search.longitude.isVisibleTo(search)
     assert not search.source.isVisibleTo(search)
+
+    open_meteo_index = next(
+        index
+        for index in range(search.provider_tabs.count())
+        if search.provider_tabs.tabData(index) == "openmeteo"
+    )
+    search.provider_tabs.setCurrentIndex(open_meteo_index)
+    assert search.source.isVisibleTo(search)
+    assert search.latitude.isVisibleTo(search)
+    assert search.start_year.minimum() == 1940
+    assert search.end_year.maximum() >= 2026
+    assert "不是未来预估" in search.provider_info.text()
     database.dispose()
+
+
+def test_coverage_formats_iso_compact_epoch_and_missing_values() -> None:
+    assert _coverage(
+        LogicalFile(
+            logical_key="iso",
+            filename="iso.nc",
+            frequency="day",
+            temporal=TemporalCoverage(
+                start="2015-01-01T12:00:00Z",
+                end="2055-12-31T12:00:00Z",
+                source="api",
+            ),
+        )
+    ) == "2015-01-01 至 2055-12-31"
+    assert _coverage(
+        LogicalFile(
+            logical_key="compact",
+            filename="compact.nc",
+            temporal=TemporalCoverage(start="201501", end="205512", source="filename"),
+        )
+    ) == "2015-01 至 2055-12"
+    assert _coverage(
+        LogicalFile(
+            logical_key="missing",
+            filename="missing.nc",
+            temporal=TemporalCoverage(),
+        )
+    ) == "时间范围未提供"
 
 
 def test_provider_request_uses_selected_product_and_location(qtbot, tmp_path: Path) -> None:

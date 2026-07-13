@@ -4,6 +4,7 @@ import hashlib
 import json
 import time
 from dataclasses import dataclass
+from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote, urljoin, urlsplit
@@ -44,7 +45,7 @@ class HttpProviderBackend:
         self.client = client or httpx.AsyncClient(
             timeout=httpx.Timeout(35, connect=12),
             follow_redirects=True,
-            headers={"User-Agent": "CMIP-Climate-Explorer/0.4.2"},
+            headers={"User-Agent": "CMIP-Climate-Explorer/0.5.0"},
         )
 
     async def detect_capabilities(self) -> BackendCapabilities:
@@ -555,6 +556,145 @@ class NoaaNceiBackend(HttpProviderBackend):
         self, request: SearchRequest, names: tuple[str, ...]
     ) -> dict[str, dict[str, int]]:
         return {name: {} for name in names}
+
+
+class OpenMeteoBackend(HttpProviderBackend):
+    historical_models = ("era5", "era5_land")
+    climate_models = (
+        "CMCC_CM2_VHR4",
+        "FGOALS_f3_H",
+        "HiRAM_SIT_HR",
+        "MRI_AGCM3_2_S",
+        "EC_Earth3P_HR",
+        "MPI_ESM1_2_XR",
+        "NICAM16_8S",
+    )
+
+    async def search(
+        self, request: SearchRequest, cursor: str | int | None = None
+    ) -> SearchPage:
+        del cursor
+        product_id = (request.product_id or "historical").lower()
+        variable_id = (_constraint(request, "variable_id") or ("temperature_2m_mean",))[0]
+        latitude = request.parameters.get("latitude", "39.9")
+        longitude = request.parameters.get("longitude", "116.4")
+        start_year, end_year = self._validated_years(request, product_id)
+        requested_end = self._end_date(product_id, end_year)
+        requested_models = _constraint(request, "source_id")
+        available_models = (
+            self.climate_models if product_id == "climate" else self.historical_models
+        )
+        models = tuple(
+            model
+            for model in available_models
+            if not requested_models or model in requested_models
+        )
+        endpoint = (
+            "https://climate-api.open-meteo.com/v1/climate"
+            if product_id == "climate"
+            else "https://archive-api.open-meteo.com/v1/archive"
+        )
+        files: list[LogicalFile] = []
+        for model in models:
+            model_start = 1950 if model == "era5_land" else start_year
+            effective_start = max(start_year, model_start)
+            if effective_start > end_year:
+                continue
+            params = {
+                "latitude": latitude,
+                "longitude": longitude,
+                "start_date": f"{effective_start:04d}-01-01",
+                "end_date": requested_end.isoformat(),
+                "daily": variable_id,
+                "models": model,
+                "timezone": "GMT",
+                "temperature_unit": "celsius",
+                "wind_speed_unit": "ms",
+                "precipitation_unit": "mm",
+                "format": "csv",
+            }
+            url = str(httpx.URL(endpoint, params=params))
+            safe_model = model.replace("-", "_")
+            filename = (
+                f"OpenMeteo_{product_id}_{safe_model}_{variable_id}_"
+                f"{effective_start}-{end_year}.csv"
+            )
+            resolution = self._resolution(product_id, model)
+            file = _generated_file(
+                backend=self.definition,
+                request=request,
+                logical_key=(
+                    f"openmeteo:{product_id}:{model}:{variable_id}:"
+                    f"{latitude}:{longitude}:{effective_start}:{end_year}"
+                ),
+                filename=filename,
+                variable_id=variable_id,
+                frequency="day",
+                url=url,
+                source_id=model,
+                temporal_start=f"{effective_start:04d}-01-01",
+                temporal_end=requested_end.isoformat(),
+                note="无需账号, 可直接下载日尺度 CSV",
+            ).model_copy(
+                update={
+                    "table_id": "day",
+                    "nominal_resolution": resolution,
+                    "grid_label": "point",
+                }
+            )
+            files.append(file)
+        return SearchPage(
+            files=tuple(files[: request.page_size]),
+            raw_total_by_backend={self.definition.id: len(files)},
+            known_unique_count=len(files),
+            exact_total=True,
+            next_cursors={self.definition.id: None},
+            facet_counts={
+                "source_id": {model: 1 for model in available_models},
+                "frequency": {"day": len(files)},
+                "table_id": {"day": len(files)},
+            },
+        )
+
+    async def facets(
+        self, request: SearchRequest, names: tuple[str, ...]
+    ) -> dict[str, dict[str, int]]:
+        models = (
+            self.climate_models
+            if (request.product_id or "historical") == "climate"
+            else self.historical_models
+        )
+        result = {name: {} for name in names}
+        if "source_id" in result:
+            result["source_id"] = {model: 1 for model in models}
+        if "frequency" in result:
+            result["frequency"] = {"day": len(models)}
+        if "table_id" in result:
+            result["table_id"] = {"day": len(models)}
+        return result
+
+    @staticmethod
+    def _validated_years(request: SearchRequest, product_id: str) -> tuple[int, int]:
+        lower, upper = (1950, 2050) if product_id == "climate" else (1940, date.today().year)
+        start_year = request.start_year if request.start_year is not None else lower
+        end_year = request.end_year if request.end_year is not None else upper
+        if start_year < lower or end_year > upper:
+            raise ValueError(f"该数据产品支持的年份范围为 {lower}-{upper}")
+        return start_year, end_year
+
+    @staticmethod
+    def _resolution(product_id: str, model: str) -> str:
+        if product_id == "climate":
+            return "约 10 km"
+        return "约 9 km" if model == "era5_land" else "约 25 km"
+
+    @staticmethod
+    def _end_date(product_id: str, end_year: int) -> date:
+        if product_id == "climate" and end_year == 2050:
+            return date(2050, 1, 1)
+        if product_id == "historical" and end_year == date.today().year:
+            return date.today() - timedelta(days=7)
+        return date(end_year, 12, 31)
 
 
 def _constraint(request: SearchRequest, name: str) -> tuple[str, ...]:

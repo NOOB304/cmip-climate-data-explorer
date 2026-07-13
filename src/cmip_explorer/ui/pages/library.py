@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
-from PySide6.QtCore import QPoint, QProcess, Qt
+from PySide6.QtCore import QPoint, QProcess, Qt, Signal
 from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
@@ -80,6 +80,8 @@ def scan_local_data_groups(root: Path) -> tuple[LocalDataGroup, ...]:
 
 
 class LibraryPage(QWidget):
+    data_changed = Signal()
+
     def __init__(self, output_root: Path, state: ApplicationState | None = None) -> None:
         super().__init__()
         self.output_root = output_root
@@ -348,6 +350,7 @@ class LibraryPage(QWidget):
                     "已删除本地数据组: " + "；".join(str(path) for path in delete_paths)
                 )
             self.refresh()
+            self.data_changed.emit()
 
 
 def _human_bytes(value: int) -> str:

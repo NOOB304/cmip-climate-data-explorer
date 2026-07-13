@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import datetime
 
 from PySide6.QtCore import QSize, Qt, QThreadPool, QUrl
 from PySide6.QtGui import QCloseEvent, QColor, QDesktopServices
@@ -115,10 +116,12 @@ class MainWindow(QMainWindow):
         self.logs = QPlainTextEdit()
         self.logs.setReadOnly(True)
         self._log_records: list[dict[str, object]] = []
+        self._detailed_logs = False
         settings_page = SettingsPage(self.paths.data / "settings.json", self.workflow)
         self.library_page = LibraryPage(self.workflow.storage_root, self.state)
         self.processing_page = ProcessingPage(self.state, self.workflow.storage_root)
         self.processing_page.processed.connect(self.library_page.refresh)
+        self.library_page.data_changed.connect(self.processing_page.refresh_data)
         settings_page.saved.connect(self._settings_saved)
         pages = (
             ("数据下载", SearchPage(self.state, catalog, self.paths.data, self.workflow)),
@@ -130,7 +133,7 @@ class MainWindow(QMainWindow):
         )
         icons = (
             QStyle.StandardPixmap.SP_DriveNetIcon,
-            QStyle.StandardPixmap.SP_ArrowDown,
+            QStyle.StandardPixmap.SP_FileDialogListView,
             QStyle.StandardPixmap.SP_FileDialogDetailedView,
             QStyle.StandardPixmap.SP_DirOpenIcon,
             QStyle.StandardPixmap.SP_FileDialogInfoView,
@@ -141,7 +144,7 @@ class MainWindow(QMainWindow):
             item.setToolTip(name)
             self.navigation.addItem(item)
             self.stack.addWidget(page)
-        self.navigation.currentRowChanged.connect(self.stack.setCurrentIndex)
+        self.navigation.currentRowChanged.connect(self._page_changed)
         self.navigation.setCurrentRow(0)
         self.state.message.connect(self._message)
         root.addWidget(sidebar)
@@ -159,7 +162,7 @@ class MainWindow(QMainWindow):
         layout.setSpacing(12)
         title = QLabel("操作日志")
         title.setObjectName("PageTitle")
-        subtitle = QLabel("查看检索、下载和文件处理过程中的运行记录与错误详情")
+        subtitle = QLabel("默认显示下载、处理和删除等用户操作；需要排错时可切换详细日志")
         subtitle.setObjectName("PageSubtitle")
         toolbar = QHBoxLayout()
         toolbar.setSpacing(8)
@@ -170,6 +173,9 @@ class MainWindow(QMainWindow):
         self.log_search.setPlaceholderText("搜索日志内容")
         self.log_search.setClearButtonEnabled(True)
         self.log_search.textChanged.connect(self._render_logs)
+        self.log_mode_button = QPushButton("查看详细日志")
+        self.log_mode_button.setCheckable(True)
+        self.log_mode_button.toggled.connect(self._set_detailed_logs)
         refresh = QPushButton("刷新日志")
         refresh.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_BrowserReload))
         refresh.clicked.connect(self._refresh_logs)
@@ -178,8 +184,10 @@ class MainWindow(QMainWindow):
         open_folder.clicked.connect(
             lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(str(self.paths.logs)))
         )
+        self.log_open_folder = open_folder
         toolbar.addWidget(self.log_level)
         toolbar.addWidget(self.log_search, 1)
+        toolbar.addWidget(self.log_mode_button)
         toolbar.addWidget(refresh)
         toolbar.addWidget(open_folder)
         self.log_table = QTableWidget(0, 4)
@@ -197,6 +205,7 @@ class MainWindow(QMainWindow):
         self.log_table.itemSelectionChanged.connect(self._show_log_details)
         detail_frame = QFrame()
         detail_frame.setObjectName("DetailsPanel")
+        self.log_detail_frame = detail_frame
         detail_layout = QVBoxLayout(detail_frame)
         detail_layout.setContentsMargins(12, 10, 12, 10)
         detail_title = QLabel("详细信息")
@@ -212,6 +221,9 @@ class MainWindow(QMainWindow):
         layout.addWidget(subtitle)
         layout.addLayout(toolbar)
         layout.addWidget(splitter, 1)
+        self.log_level.hide()
+        self.log_open_folder.hide()
+        self.log_detail_frame.hide()
         self._refresh_logs()
         return page
 
@@ -245,11 +257,29 @@ class MainWindow(QMainWindow):
             level = str(record.get("level", "INFO")).upper()
             message = str(record.get("message", ""))
             module = str(record.get("logger", record.get("module", "应用")))
-            if level_filter != "全部级别" and level != level_map[level_filter]:
+            if self._detailed_logs:
+                if level_filter != "全部级别" and level != level_map[level_filter]:
+                    continue
+            elif not _is_operation_record(record):
                 continue
             if keyword and keyword not in f"{message} {module}".casefold():
                 continue
             records.append(record)
+        if self._detailed_logs:
+            self.log_table.setColumnCount(4)
+            self.log_table.setHorizontalHeaderLabels(("时间", "级别", "模块", "事件"))
+            header = self.log_table.horizontalHeader()
+            header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+            header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+            header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+            header.setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
+        else:
+            self.log_table.setColumnCount(3)
+            self.log_table.setHorizontalHeaderLabels(("时间", "操作", "内容"))
+            header = self.log_table.horizontalHeader()
+            header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+            header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+            header.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
         self.log_table.setRowCount(len(records))
         colors = {
             "WARNING": QColor("#b36a00"),
@@ -259,26 +289,43 @@ class MainWindow(QMainWindow):
         }
         for row, record in enumerate(records):
             level = str(record.get("level", "INFO")).upper()
-            values = (
-                str(record.get("timestamp", "-")),
-                {"INFO": "信息", "WARNING": "警告", "ERROR": "错误"}.get(level, level),
-                str(record.get("logger", record.get("module", "应用"))),
-                str(record.get("message", "")),
-            )
+            message = str(record.get("message", ""))
+            timestamp = _friendly_log_time(record.get("timestamp"))
+            if self._detailed_logs:
+                values = (
+                    timestamp,
+                    {"INFO": "信息", "WARNING": "警告", "ERROR": "错误"}.get(
+                        level, level
+                    ),
+                    str(record.get("logger", record.get("module", "应用"))),
+                    message,
+                )
+            else:
+                values = (timestamp, _operation_category(message), message)
             for column, value in enumerate(values):
                 item = QTableWidgetItem(value)
                 item.setToolTip(value)
                 if column == 0:
                     item.setData(Qt.ItemDataRole.UserRole, record)
-                if column == 1:
+                if self._detailed_logs and column == 1:
                     item.setForeground(colors.get(level, QColor("#4f6067")))
                 self.log_table.setItem(row, column, item)
         if records:
             self.log_table.selectRow(0)
         else:
-            self.logs.setPlainText("没有符合当前筛选条件的日志。")
+            self.logs.setPlainText("没有符合当前筛选条件的记录。")
+
+    def _set_detailed_logs(self, enabled: bool) -> None:
+        self._detailed_logs = enabled
+        self.log_mode_button.setText("返回操作记录" if enabled else "查看详细日志")
+        self.log_level.setVisible(enabled)
+        self.log_open_folder.setVisible(enabled)
+        self.log_detail_frame.setVisible(enabled)
+        self._render_logs()
 
     def _show_log_details(self) -> None:
+        if not self._detailed_logs:
+            return
         row = self.log_table.currentRow()
         if row < 0 or self.log_table.item(row, 0) is None:
             return
@@ -286,9 +333,18 @@ class MainWindow(QMainWindow):
         self.logs.setPlainText(json.dumps(record, ensure_ascii=False, indent=2))
 
     def _message(self, message: str) -> None:
-        logging.getLogger("cmip_explorer.ui").info(message)
+        logging.getLogger("cmip_explorer.operations").info(message)
         self.statusBar().showMessage(message, 6000)
         self.logs.appendPlainText(message)
+
+    def _page_changed(self, index: int) -> None:
+        self.stack.setCurrentIndex(index)
+        if index == 2:
+            self.processing_page.refresh_data()
+        elif index == 3:
+            self.library_page.refresh()
+        elif index == 4:
+            self._refresh_logs()
 
     def _settings_saved(self, message: str) -> None:
         self.library_page.set_output_root(self.workflow.storage_root)
@@ -304,3 +360,38 @@ class MainWindow(QMainWindow):
                 "background work did not stop within the shutdown grace period"
             )
         super().closeEvent(event)
+
+
+def _is_operation_record(record: dict[str, object]) -> bool:
+    logger = str(record.get("logger", record.get("module", "")))
+    level = str(record.get("level", "INFO")).upper()
+    return level == "INFO" and logger in {
+        "cmip_explorer.operations",
+        "cmip_explorer.ui",
+    }
+
+
+def _friendly_log_time(value: object) -> str:
+    text = str(value or "-")
+    try:
+        return datetime.fromisoformat(text.replace("Z", "+00:00")).astimezone().strftime(
+            "%Y-%m-%d %H:%M:%S"
+        )
+    except ValueError:
+        return text
+
+
+def _operation_category(message: str) -> str:
+    categories = (
+        (("查询", "检索"), "数据查询"),
+        (("下载", "任务", "暂停", "恢复", "取消"), "数据下载"),
+        (("处理", "TIF", "转换", "裁剪", "重采样"), "文件处理"),
+        (("删除", "清理", "清空"), "数据管理"),
+        (("设置", "保存位置", "更新"), "软件设置"),
+        (("导出",), "导出列表"),
+        (("打开",), "打开目录"),
+    )
+    return next(
+        (label for keywords, label in categories if any(word in message for word in keywords)),
+        "其他操作",
+    )

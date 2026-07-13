@@ -9,6 +9,7 @@
 | Copernicus CDS | CMIP6、ERA5、ERA5-Land | 实时读取 CDS 表单 API | 公共目录可查；取数需 CDS 账号、许可和异步任务 |
 | AWS Open Data | NEX-GDDP-CMIP6 | NEX-GDDP STAC 资产 | AWS 公共 S3 NetCDF 直链，无需 AWS 账号 |
 | Planetary Computer | NEX-GDDP-CMIP6 | Planetary Computer STAC | Azure 公共 NetCDF 直链 |
+| Open-Meteo | ERA5 / ERA5-Land、CMIP6 局地预估 | Open-Meteo Historical / Climate API | 按经纬度和模式生成日尺度 CSV，无需账号 |
 | NASA POWER | 日、月点数据 | 实时读取 POWER 参数 API | 按经纬度生成 CSV 并进入下载任务 |
 | NASA Earthdata | GPM、MERRA-2、MODIS、SMAP | CMR 集合/粒度 API | 目录可分页；受保护文件需 Earthdata 登录 |
 | NOAA NCEI | 日摘要、GSOD、全球逐小时 | NCEI 产品字段 | 按站点生成 CSV 并进入下载任务 |
@@ -25,6 +26,15 @@ AWS Open Data 和 Planetary Computer 的 NEX-GDDP-CMIP6 在服务端按年份保
 常用气温、降水、湿度、风、气压、辐射和土壤变量内置中文名称及别名。
 CDS 与 POWER 的变量清单在切换产品时实时读取，因此服务以后增加的新变量仍会显示，
 没有内置中文名称时使用服务返回的英文名称。
+
+## Open-Meteo 怎么选
+
+- “历史再分析”用于查看过去天气。ERA5 是约 25 km 的全球再分析，ERA5-Land
+  是约 11 km 的陆面再分析；这类数据是观测与模型融合后的估计，不是未来预估。
+- “CMIP6 局地预估”用于比较未来气候变化。软件把 7 个模式分别列出，便于多模式
+  对比；它们已偏差订正并下推到约 10 km，但不是气象站实测值。
+- 两个产品都按经纬度生成 CSV。历史产品始于 1940 年，近期数据约有 5 天延迟；
+  气候产品覆盖 1950 年至 `2050-01-01`。
 
 ## 文件位置
 

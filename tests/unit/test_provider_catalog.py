@@ -75,3 +75,12 @@ async def test_power_variables_keep_unknown_api_parameters_in_english() -> None:
 
     assert variables[0].chinese_name == "2 米气温"
     assert variables[1].display_name == "Future Parameter"
+
+
+async def test_open_meteo_variables_use_clear_chinese_labels() -> None:
+    variables = await discover_provider_variables("openmeteo", "climate")
+
+    by_id = {variable.id: variable for variable in variables}
+    assert by_id["temperature_2m_mean"].display_name == "2 米平均气温"
+    assert by_id["precipitation_sum"].display_name == "总降水量"
+    assert by_id["soil_moisture_0_to_10cm_mean"].units == "m³/m³"
