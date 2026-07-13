@@ -99,6 +99,7 @@ class SearchPage(QWidget):
         self._search_sequence = 0
         self._last_request: SearchRequest | None = None
         self._next_cursors: dict[str, str | int | None] = {}
+        self._page_cursors: list[dict[str, str | int | None]] = [{}]
         self._page_number = 1
         self._facet_sequence = 0
         self._variable_sequence = 0
@@ -204,6 +205,9 @@ class SearchPage(QWidget):
         self.summary = QLabel("选择变量后查询。时间条件按覆盖范围匹配。")
         self.selected_count = QLabel("已选 0 个数据系列")
         self.selected_count.setObjectName("SelectionCount")
+        self.previous_button = QPushButton("上一页")
+        self.previous_button.clicked.connect(self.previous_page)
+        self.previous_button.setEnabled(False)
         self.next_button = QPushButton("下一页")
         self.next_button.clicked.connect(self.next_page)
         self.next_button.setEnabled(False)
@@ -220,6 +224,7 @@ class SearchPage(QWidget):
         toolbar.addWidget(self.selected_count)
         toolbar.addWidget(export_button)
         toolbar.addWidget(self.open_source_button)
+        toolbar.addWidget(self.previous_button)
         toolbar.addWidget(self.next_button)
         toolbar.addWidget(self.download_button)
         self.activity = QWidget()
@@ -426,9 +431,11 @@ class SearchPage(QWidget):
     def _reset_results(self, message: str) -> None:
         self.files = []
         self._next_cursors = {}
+        self._page_cursors = [{}]
         self._last_request = None
         self._page_number = 1
         self.table_widget.setRowCount(0)
+        self.previous_button.setEnabled(False)
         self.next_button.setEnabled(False)
         self.open_source_button.setEnabled(False)
         self.summary.setText(message)
@@ -549,7 +556,6 @@ class SearchPage(QWidget):
     def run_search(self) -> None:
         request = self._request()
         if request is not None:
-            self._page_number = 1
             variable = self.variable_match.currentData()
             variable_ids = (
                 variable.variable_ids
@@ -561,21 +567,40 @@ class SearchPage(QWidget):
                 f"{', '.join(variable_ids)}，"
                 f"{self.start_year.value()}-{self.end_year.value()}"
             )
-            self._run_request(request, {})
+            self._run_request(request, {}, page_number=1)
 
     def next_page(self) -> None:
         if self._last_request and any(value is not None for value in self._next_cursors.values()):
-            self._page_number += 1
-            self._run_request(self._last_request, self._next_cursors)
+            self._run_request(
+                self._last_request,
+                dict(self._next_cursors),
+                page_number=self._page_number + 1,
+            )
 
-    def _run_request(self, request: SearchRequest, cursors: dict[str, str | int | None]) -> None:
+    def previous_page(self) -> None:
+        target_page = self._page_number - 1
+        if self._last_request is None or target_page < 1:
+            return
+        self._run_request(
+            self._last_request,
+            dict(self._page_cursors[target_page - 1]),
+            page_number=target_page,
+        )
+
+    def _run_request(
+        self,
+        request: SearchRequest,
+        cursors: dict[str, str | int | None],
+        *,
+        page_number: int,
+    ) -> None:
         if self._search_worker is not None:
             return
-        self._last_request = request
         self._search_sequence += 1
         sequence = self._search_sequence
         self.search_button.setEnabled(False)
         self.search_button.setText("查询中…")
+        self.previous_button.setEnabled(False)
         self.next_button.setEnabled(False)
         provider_name = provider_definition(request.provider_id).name
         self.summary.setText(f"正在查询 {provider_name}…")
@@ -593,14 +618,50 @@ class SearchPage(QWidget):
         worker = AsyncRunnable(search)
         self._search_worker = worker
         self._workers.add(worker)
-        worker.signals.result.connect(lambda page: self._show_search_results(sequence, page))
-        worker.signals.error.connect(self._show_error)
+        worker.signals.result.connect(
+            lambda page: self._show_search_results(
+                sequence, page, request, page_number, cursors
+            )
+        )
+        worker.signals.error.connect(self._show_search_error)
         worker.signals.finished.connect(lambda: self._finish_search_worker(worker))
         self.pool.start(worker)
 
-    def _show_search_results(self, sequence: int, page: ResultPage) -> None:
-        if sequence == self._search_sequence:
-            self._show_results(page)
+    def _show_search_results(
+        self,
+        sequence: int,
+        page: ResultPage,
+        request: SearchRequest,
+        page_number: int,
+        cursors: dict[str, str | int | None],
+    ) -> None:
+        if sequence != self._search_sequence:
+            return
+        if page_number > 1 and not page.files:
+            self._next_cursors = {}
+            self.next_button.setEnabled(False)
+            self.previous_button.setEnabled(self._page_number > 1)
+            self.summary.setText(
+                f"第 {self._page_number} 页之后没有更多匹配结果，已保留当前页面"
+            )
+            return
+        self._last_request = request
+        self._page_number = page_number
+        if page_number == 1:
+            self._page_cursors = [dict(cursors)]
+        elif page_number <= len(self._page_cursors):
+            self._page_cursors = self._page_cursors[:page_number]
+            self._page_cursors[page_number - 1] = dict(cursors)
+        else:
+            self._page_cursors.append(dict(cursors))
+        self._show_results(page)
+
+    def _show_search_error(self, _trace: str, error: object) -> None:
+        self.activity.hide()
+        self.summary.setText(
+            f"查询未完成，已保留第 {self._page_number} 页，可稍后重试"
+        )
+        QMessageBox.warning(self, "查询未完成", str(error))
 
     def _finish_search_worker(self, worker: AsyncRunnable) -> None:
         self._workers.discard(worker)
@@ -609,6 +670,10 @@ class SearchPage(QWidget):
             self.search_button.setEnabled(True)
             self.search_button.setText("查询数据")
             self.activity.hide()
+            self.previous_button.setEnabled(self._page_number > 1)
+            self.next_button.setEnabled(
+                any(value is not None for value in self._next_cursors.values())
+            )
             self._selection_changed()
 
     def _show_results(self, page: ResultPage) -> None:
@@ -616,6 +681,7 @@ class SearchPage(QWidget):
         if page.facet_counts:
             self._populate_facet_filters(page.facet_counts)
         self._next_cursors = page.next_cursors
+        self.previous_button.setEnabled(self._page_number > 1)
         self.next_button.setEnabled(any(value is not None for value in page.next_cursors.values()))
         self.table_widget.blockSignals(True)
         self.table_widget.setSortingEnabled(False)

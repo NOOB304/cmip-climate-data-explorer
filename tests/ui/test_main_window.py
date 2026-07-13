@@ -12,6 +12,7 @@ from cmip_explorer.domain.models import (
     DownloadTask,
     LogicalFile,
     Replica,
+    SearchRequest,
     TemporalCoverage,
 )
 from cmip_explorer.domain.models import SearchPage as ResultPage
@@ -50,7 +51,7 @@ def test_main_window_contains_complete_workbench_navigation(qtbot, tmp_path: Pat
     )
     settings_page = window.stack.widget(5)
     assert settings_page.update_button.text() == "检查更新"
-    assert settings_page.version_label.text() == "当前版本 0.3.1"
+    assert settings_page.version_label.text() == "当前版本 0.3.2"
     assert window.minimumWidth() >= 1180
     database.dispose()
 
@@ -319,4 +320,72 @@ def test_provider_request_uses_selected_product_and_location(qtbot, tmp_path: Pa
     assert request.product_id == "daily"
     assert request.parameters["latitude"] == "30.5"
     assert request.parameters["longitude"] == "114.3"
+    database.dispose()
+
+
+def test_search_pagination_supports_previous_and_preserves_results_on_empty_page(
+    qtbot, tmp_path: Path, monkeypatch
+) -> None:
+    paths = AppPaths(
+        data=tmp_path / "data",
+        cache=tmp_path / "cache",
+        logs=tmp_path / "logs",
+        outputs=tmp_path / "outputs",
+        database=tmp_path / "data" / "app.db",
+        catalog=tmp_path / "data" / "catalog.db",
+    )
+    paths.ensure()
+    install_packaged_catalog(paths.catalog)
+    database = Database(paths.database)
+    database.initialize()
+    repository = TaskRepository(database)
+    window = MainWindow(paths, repository, WorkflowService(paths, repository))
+    qtbot.addWidget(window)
+    search = window.stack.widget(0)
+    request = SearchRequest()
+    first = LogicalFile(logical_key="first", filename="first.nc")
+    second = LogicalFile(logical_key="second", filename="second.nc")
+
+    search._show_search_results(
+        search._search_sequence,
+        ResultPage(files=(first,), next_cursors={"dkrz": 100}),
+        request,
+        1,
+        {},
+    )
+    assert not search.previous_button.isEnabled()
+    assert search.next_button.isEnabled()
+
+    search._show_search_results(
+        search._search_sequence,
+        ResultPage(files=(second,), next_cursors={"dkrz": 200}),
+        request,
+        2,
+        {"dkrz": 100},
+    )
+    assert search.previous_button.isEnabled()
+    assert search.table_widget.item(0, 12).text() == "second.nc"
+
+    requested = []
+    monkeypatch.setattr(
+        search,
+        "_run_request",
+        lambda req, cursors, *, page_number: requested.append(
+            (req, cursors, page_number)
+        ),
+    )
+    search.previous_page()
+    assert requested == [(request, {}, 1)]
+
+    search._show_search_results(
+        search._search_sequence,
+        ResultPage(files=(), next_cursors={"dkrz": None}),
+        request,
+        3,
+        {"dkrz": 200},
+    )
+    assert search._page_number == 2
+    assert search.table_widget.item(0, 12).text() == "second.nc"
+    assert not search.next_button.isEnabled()
+    assert "已保留当前页面" in search.summary.text()
     database.dispose()

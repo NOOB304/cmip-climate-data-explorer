@@ -10,6 +10,8 @@ from .registry import BackendRegistry
 
 
 class MultiBackendSearchService:
+    max_empty_page_skips = 20
+
     def __init__(self, registry: BackendRegistry) -> None:
         self.registry = registry
 
@@ -21,21 +23,48 @@ class MultiBackendSearchService:
             return SearchPage(files=(), warnings=("No search backends are enabled",))
         cursor_map = cursors or {}
         warnings: list[str] = []
-        cursor = next((value for value in cursor_map.values() if value is not None), None)
         if cursor_map:
-            active = tuple(
+            backends = tuple(
                 backend for backend in backends if backend.definition.id in cursor_map
             )
-            fallback = tuple(backend for backend in backends if backend not in active)
-            backends = (*active, *fallback)
+            if not backends:
+                raise RuntimeError("分页来源已经不可用 请重新查询")
+        last_error: Exception | None = None
         for backend in backends:
+            cursor = cursor_map.get(backend.definition.id)
             try:
-                result = await self._search_with_retry(backend, request, cursor)
+                result, skipped = await self._search_visible_page(backend, request, cursor)
             except Exception as exc:
+                last_error = exc
                 warnings.append(f"{backend.definition.name}: {type(exc).__name__}: {exc!s}")
                 continue
+            if skipped:
+                warnings.append(
+                    f"{backend.definition.name}: 已跳过 {skipped} 个无匹配记录的原始分页"
+                )
             return result.model_copy(update={"warnings": (*warnings, *result.warnings)})
+        if cursor_map and last_error is not None:
+            raise RuntimeError("当前分页节点暂时不可用 已保留原页面 请稍后重试") from last_error
         return SearchPage(files=(), warnings=tuple(warnings))
+
+    async def _search_visible_page(self, backend, request, cursor):
+        skipped = 0
+        seen_cursors: set[str] = set()
+        while True:
+            result = await self._search_with_retry(backend, request, cursor)
+            if result.files:
+                return result, skipped
+            next_cursor = result.next_cursors.get(backend.definition.id)
+            if next_cursor is None:
+                return result, skipped
+            marker = repr(next_cursor)
+            if marker in seen_cursors or next_cursor == cursor:
+                raise RuntimeError("数据源返回了重复分页位置")
+            if skipped >= self.max_empty_page_skips:
+                raise RuntimeError("连续分页均无匹配记录 请缩小查询条件后重试")
+            seen_cursors.add(marker)
+            cursor = next_cursor
+            skipped += 1
 
     async def historical_companion(
         self, file: LogicalFile, requested_start_year: int

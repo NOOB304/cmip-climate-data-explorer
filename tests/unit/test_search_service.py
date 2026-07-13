@@ -65,6 +65,20 @@ class SearchBackendStub:
         }
 
 
+class PagedBackendStub:
+    def __init__(self, backend_id: str, pages: dict[object, SearchPage | Exception]) -> None:
+        self.definition = SimpleNamespace(id=backend_id, name=backend_id)
+        self.pages = pages
+        self.cursors: list[object] = []
+
+    async def search(self, _request, cursor):
+        self.cursors.append(cursor)
+        result = self.pages[cursor]
+        if isinstance(result, Exception):
+            raise result
+        return result
+
+
 async def test_transient_search_error_is_retried_once() -> None:
     backend = StubBackend([httpx.ReadTimeout("slow node")])
     result = await MultiBackendSearchService._search_with_retry(backend, SearchRequest(), None)
@@ -92,3 +106,46 @@ async def test_distributed_search_uses_one_index_node_instead_of_merging_duplica
     assert primary.search_calls == 1
     assert duplicate.search_calls == 0
     assert result.raw_total_by_backend == {"primary": 10}
+
+
+async def test_empty_raw_page_is_skipped_before_results_are_shown() -> None:
+    file = LogicalFile(logical_key="visible", filename="visible.nc")
+    backend = PagedBackendStub(
+        "primary",
+        {
+            None: SearchPage(
+                files=(),
+                next_cursors={"primary": 100},
+            ),
+            100: SearchPage(
+                files=(file,),
+                next_cursors={"primary": None},
+            ),
+        },
+    )
+
+    result = await MultiBackendSearchService(RegistryStub(backend)).search(SearchRequest())
+
+    assert result.files == (file,)
+    assert backend.cursors == [None, 100]
+    assert "已跳过 1 个" in result.warnings[0]
+
+
+async def test_pagination_cursor_never_falls_back_to_another_node() -> None:
+    primary = PagedBackendStub("primary", {100: RuntimeError("node failed")})
+    fallback = PagedBackendStub(
+        "fallback",
+        {
+            None: SearchPage(
+                files=(LogicalFile(logical_key="wrong", filename="wrong.nc"),),
+                next_cursors={"fallback": None},
+            )
+        },
+    )
+    service = MultiBackendSearchService(RegistryStub(primary, fallback))
+
+    with pytest.raises(RuntimeError, match="已保留原页面"):
+        await service.search(SearchRequest(), {"primary": 100})
+
+    assert primary.cursors == [100]
+    assert fallback.cursors == []
