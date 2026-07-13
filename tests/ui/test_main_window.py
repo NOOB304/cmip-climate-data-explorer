@@ -53,7 +53,7 @@ def test_main_window_contains_complete_workbench_navigation(qtbot, tmp_path: Pat
     )
     settings_page = window.stack.widget(5)
     assert settings_page.update_button.text() == "检查更新"
-    assert settings_page.version_label.text() == "当前版本 0.4.1"
+    assert settings_page.version_label.text() == "当前版本 0.4.2"
     settings_page._show_update_progress(50 * 1024**2, 100 * 1024**2)
     assert settings_page.update_progress.maximum() == 1000
     assert settings_page.update_progress.value() == 500
@@ -83,7 +83,7 @@ def test_verified_update_runs_silently_and_restarts_application(
     settings_page = window.stack.widget(5)
     started: list[tuple[str, list[str]]] = []
     timers: list[tuple[int, object]] = []
-    monkeypatch.setattr(QMessageBox, "information", lambda *_args: None)
+    monkeypatch.setattr(settings_module.os, "getpid", lambda: 4242)
     monkeypatch.setattr(
         settings_module,
         "QProcess",
@@ -100,21 +100,40 @@ def test_verified_update_runs_silently_and_restarts_application(
         SimpleNamespace(singleShot=lambda delay, callback: timers.append((delay, callback))),
     )
 
-    installer = tmp_path / "CMIP-Climate-Explorer-0.4.1-x64-Setup.exe"
+    installer = tmp_path / "CMIP-Climate-Explorer-0.4.2-x64-Setup.exe"
     settings_page._update_downloaded(installer)
 
     assert started == [
         (
-            str(installer),
+            "powershell.exe",
             [
-                "/VERYSILENT",
-                "/NORESTART",
-                "/CLOSEAPPLICATIONS",
-                "/UPDATE=1",
+                "-NoLogo",
+                "-NoProfile",
+                "-NonInteractive",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-WindowStyle",
+                "Hidden",
+                "-File",
+                str(tmp_path / "apply-update.ps1"),
+                "-ParentPid",
+                "4242",
+                "-Installer",
+                str(installer),
+                "-LogPath",
+                str(tmp_path / "update-install.log"),
             ],
         )
     ]
-    assert timers and timers[0][0] == 500
+    assert timers and timers[0][0] == 100
+    launcher_script = (tmp_path / "apply-update.ps1").read_text(encoding="utf-8")
+    assert "Get-Process -Id $ParentPid" in launcher_script
+    assert "'/VERYSILENT'" in launcher_script
+    assert "'/SUPPRESSMSGBOXES'" in launcher_script
+    assert "'/FORCECLOSEAPPLICATIONS'" in launcher_script
+    assert "'/UPDATE=1'" in launcher_script
+    assert "'/STAGEDUPDATE=1'" in launcher_script
+    assert "-Wait -WindowStyle Hidden" in launcher_script
     database.dispose()
 
 

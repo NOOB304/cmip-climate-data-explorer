@@ -1,5 +1,5 @@
 #define MyAppName "CMIP Climate Explorer"
-#define MyAppVersion "0.4.1"
+#define MyAppVersion "0.4.2"
 #define MyAppPublisher "CMIP Climate Explorer contributors"
 #define MyAppExeName "CMIPClimateExplorer.exe"
 
@@ -57,6 +57,11 @@ begin
   Result := not IsUpdateMode();
 end;
 
+function IsStagedUpdate(): Boolean;
+begin
+  Result := CompareText(ExpandConstant('{param:STAGEDUPDATE|0}'), '1') = 0;
+end;
+
 function HasCommandLineSwitch(const SwitchName: String): Boolean;
 var
   Index: Integer;
@@ -80,18 +85,20 @@ var
 begin
   Result := True;
 
-  { Versions up to 0.3.2 launched updates without a silent switch. Relaunch this
-    installer in update mode so the first automatic upgrade is seamless too. }
-  if HasCommandLineSwitch('/CLOSEAPPLICATIONS') and
-     (not WizardSilent()) and
-     (not IsUpdateMode()) then
+  { Stage updates until the desktop process has exited. This also upgrades
+    versions that launched Setup immediately while their files were still open. }
+  if (IsUpdateMode() and (not IsStagedUpdate())) or
+     (HasCommandLineSwitch('/CLOSEAPPLICATIONS') and
+      (not WizardSilent()) and
+      (not IsUpdateMode())) then
   begin
     BridgePath := AddBackslash(GetTempDir()) + 'CMIPClimateExplorerUpdate.cmd';
     BridgeScript :=
       '@echo off' + #13#10 +
-      'ping 127.0.0.1 -n 3 >nul' + #13#10 +
+      'ping 127.0.0.1 -n 4 >nul' + #13#10 +
       '"' + ExpandConstant('{srcexe}') +
-      '" /VERYSILENT /NORESTART /CLOSEAPPLICATIONS /UPDATE=1' + #13#10 +
+      '" /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /CLOSEAPPLICATIONS ' +
+      '/FORCECLOSEAPPLICATIONS /UPDATE=1 /STAGEDUPDATE=1' + #13#10 +
       'del "%~f0"' + #13#10;
     if (not SaveStringToFile(BridgePath, BridgeScript, False)) or
        (not ShellExec(
@@ -105,6 +112,7 @@ begin
        )) then
       MsgBox('无法启动后台更新程序。', mbError, MB_OK);
     Result := False;
+    Exit;
   end;
 end;
 

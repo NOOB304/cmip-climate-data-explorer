@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from PySide6.QtCore import QProcess, Qt, QThreadPool, QTimer, Signal
@@ -291,26 +292,75 @@ class SettingsPage(QWidget):
     def _update_downloaded(self, installer: Path) -> None:
         self._set_update_idle()
         self.update_status.setText(f"更新包校验通过: {installer.name}")
-        QMessageBox.information(
-            self,
-            "准备更新",
-            "更新包已经通过 SHA-256 校验。软件将自动关闭，后台完成更新后"
-            "自动重新打开；安装位置和现有数据不会改变。",
-        )
+        try:
+            launcher = self._write_update_launcher(installer)
+        except OSError as exc:
+            QMessageBox.critical(self, "软件更新", f"无法创建后台更新程序。\n\n{exc}")
+            return
         result = QProcess.startDetached(
-            str(installer),
+            "powershell.exe",
             [
-                "/VERYSILENT",
-                "/NORESTART",
-                "/CLOSEAPPLICATIONS",
-                "/UPDATE=1",
+                "-NoLogo",
+                "-NoProfile",
+                "-NonInteractive",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-WindowStyle",
+                "Hidden",
+                "-File",
+                str(launcher),
+                "-ParentPid",
+                str(os.getpid()),
+                "-Installer",
+                str(installer),
+                "-LogPath",
+                str(installer.parent / "update-install.log"),
             ],
         )
         started = result[0] if isinstance(result, tuple) else bool(result)
         if not started:
             QMessageBox.critical(self, "软件更新", "无法启动后台更新程序。")
             return
-        QTimer.singleShot(500, QApplication.quit)
+        QTimer.singleShot(100, QApplication.quit)
+
+    @staticmethod
+    def _write_update_launcher(installer: Path) -> Path:
+        launcher = installer.parent / "apply-update.ps1"
+        launcher.write_text(
+            """param(
+    [Parameter(Mandatory=$true)][int]$ParentPid,
+    [Parameter(Mandatory=$true)][string]$Installer,
+    [Parameter(Mandatory=$true)][string]$LogPath
+)
+$ErrorActionPreference = 'Stop'
+try {
+    for ($attempt = 0; $attempt -lt 120; $attempt++) {
+        if (-not (Get-Process -Id $ParentPid -ErrorAction SilentlyContinue)) { break }
+        Start-Sleep -Milliseconds 250
+    }
+    $installerArguments = @(
+        '/VERYSILENT',
+        '/SUPPRESSMSGBOXES',
+        '/NORESTART',
+        '/CLOSEAPPLICATIONS',
+        '/FORCECLOSEAPPLICATIONS',
+        '/UPDATE=1',
+        '/STAGEDUPDATE=1',
+        ('/LOG="' + $LogPath + '"')
+    )
+    $process = Start-Process -FilePath $Installer -ArgumentList $installerArguments `
+        -PassThru -Wait -WindowStyle Hidden
+    exit $process.ExitCode
+} catch {
+    ($_ | Out-String) | Add-Content -LiteralPath $LogPath
+    exit 1
+} finally {
+    Remove-Item -LiteralPath $PSCommandPath -Force -ErrorAction SilentlyContinue
+}
+""",
+            encoding="utf-8",
+        )
+        return launcher
 
     def _start_update_worker(self, worker: AsyncRunnable, result_slot) -> None:
         self._workers.add(worker)
