@@ -68,14 +68,20 @@ async def test_update_service_checks_downloads_and_verifies_release(tmp_path: Pa
     async with httpx.AsyncClient(
         transport=httpx.MockTransport(handler), follow_redirects=True
     ) as client:
+        progress_events: list[tuple[int, int | None]] = []
         updater = GitHubReleaseUpdater(
             "owner/repository", current_version="0.2.9", client=client
         )
         available = await updater.check()
         assert available is not None
-        result = await updater.download(available, tmp_path)
+        result = await updater.download(
+            available,
+            tmp_path,
+            progress=lambda written, total: progress_events.append((written, total)),
+        )
 
     assert result.read_bytes() == installer
+    assert progress_events[-1] == (len(installer), len(installer))
 
 
 async def test_update_service_returns_none_for_current_version() -> None:

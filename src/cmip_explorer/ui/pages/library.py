@@ -98,13 +98,17 @@ class LibraryPage(QWidget):
         open_folder = QPushButton("打开文件夹")
         open_folder.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_DirOpenIcon))
         open_folder.clicked.connect(self._open_folder)
-        delete = QPushButton("删除数据组")
-        delete.setObjectName("DangerButton")
-        delete.clicked.connect(self._delete)
+        self.delete_button = QPushButton("删除所选")
+        self.delete_button.setObjectName("DangerButton")
+        self.delete_button.setIcon(
+            self.style().standardIcon(QStyle.StandardPixmap.SP_TrashIcon)
+        )
+        self.delete_button.setEnabled(False)
+        self.delete_button.clicked.connect(self._delete)
         toolbar = QHBoxLayout()
         toolbar.addWidget(refresh)
         toolbar.addWidget(open_folder)
-        toolbar.addWidget(delete)
+        toolbar.addWidget(self.delete_button)
         toolbar.addStretch(1)
         self.status = QLabel()
         self.status.setObjectName("MutedText")
@@ -116,16 +120,17 @@ class LibraryPage(QWidget):
         self.file_count_value = _add_metric(metrics_layout, "文件总数")
         self.storage_value = _add_metric(metrics_layout, "占用空间")
         self.recent_value = _add_metric(metrics_layout, "最近更新")
-        self.table = QTableWidget(0, 5)
+        self.table = QTableWidget(0, 6)
         self.table.setHorizontalHeaderLabels(
-            ("数据组", "来源", "包含文件", "总大小", "最近更新")
+            ("选择", "数据组", "来源", "包含文件", "总大小", "最近更新")
         )
         header = self.table.horizontalHeader()
-        header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-        header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
         header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
         header.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
         header.setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(5, QHeaderView.ResizeMode.ResizeToContents)
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
         self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
@@ -135,6 +140,7 @@ class LibraryPage(QWidget):
         self.table.customContextMenuRequested.connect(self._context_menu)
         self.table.doubleClicked.connect(lambda _index: self._open_folder())
         self.table.itemSelectionChanged.connect(self._show_details)
+        self.table.itemChanged.connect(self._checked_changed)
         details = QFrame()
         details.setObjectName("DetailsPanel")
         details.setMinimumWidth(265)
@@ -174,7 +180,14 @@ class LibraryPage(QWidget):
         self.refresh()
 
     def refresh(self) -> None:
+        checked_paths = {
+            Path(str(item.data(Qt.ItemDataRole.UserRole)))
+            for row in range(self.table.rowCount())
+            if (item := self.table.item(row, 0)) is not None
+            and item.checkState() is Qt.CheckState.Checked
+        }
         self.groups = scan_local_data_groups(self.output_root)
+        self.table.blockSignals(True)
         self.table.setRowCount(len(self.groups))
         total_files = 0
         total_size = 0
@@ -193,12 +206,26 @@ class LibraryPage(QWidget):
                 _human_bytes(group.size_bytes),
                 datetime.fromtimestamp(group.modified_at).strftime("%Y-%m-%d %H:%M"),
             )
-            for column, value in enumerate(values):
+            check_item = QTableWidgetItem()
+            check_item.setFlags(
+                Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsUserCheckable
+            )
+            check_item.setCheckState(
+                Qt.CheckState.Checked
+                if group.path in checked_paths
+                else Qt.CheckState.Unchecked
+            )
+            check_item.setData(Qt.ItemDataRole.UserRole, str(group.path))
+            check_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            check_item.setToolTip(f"勾选后可删除数据组\n{group.path}")
+            self.table.setItem(row, 0, check_item)
+            for column, value in enumerate(values, start=1):
                 item = QTableWidgetItem(value)
                 item.setToolTip(str(group.path))
-                if column == 0:
+                if column == 1:
                     item.setData(Qt.ItemDataRole.UserRole, row)
                 self.table.setItem(row, column, item)
+        self.table.blockSignals(False)
         self.status.setText(f"共 {len(self.groups)} 个数据组，{total_files} 个数据文件")
         self.group_count_value.setText(str(len(self.groups)))
         self.file_count_value.setText(str(total_files))
@@ -212,6 +239,7 @@ class LibraryPage(QWidget):
             self.table.selectRow(0)
         elif not self.groups:
             self.details.setText("当前存储目录中没有可识别的数据组。")
+        self._checked_changed()
 
     def _selected_group(self) -> LocalDataGroup | None:
         row = self.table.currentRow()
@@ -250,30 +278,75 @@ class LibraryPage(QWidget):
         if selected == open_action:
             self._open_folder()
         elif selected == delete_action:
-            self._delete()
+            group = self._selected_group()
+            if group is not None:
+                self._delete_groups((group,))
+
+    def _checked_groups(self) -> tuple[LocalDataGroup, ...]:
+        selected_paths = {
+            Path(str(item.data(Qt.ItemDataRole.UserRole)))
+            for row in range(self.table.rowCount())
+            if (item := self.table.item(row, 0)) is not None
+            and item.checkState() is Qt.CheckState.Checked
+        }
+        return tuple(group for group in self.groups if group.path in selected_paths)
+
+    def _checked_changed(self) -> None:
+        count = len(self._checked_groups())
+        self.delete_button.setEnabled(count > 0)
+        self.delete_button.setText(f"删除所选 ({count})" if count else "删除所选")
 
     def _delete(self) -> None:
-        group = self._selected_group()
-        if group is None:
-            self.status.setText("请先选择一个数据组")
+        groups = self._checked_groups()
+        if not groups:
+            self.status.setText("请先勾选要删除的数据组")
             return
+        self._delete_groups(groups)
+
+    def _delete_groups(self, groups: tuple[LocalDataGroup, ...]) -> None:
         root = self.output_root.resolve()
-        resolved = group.path.resolve()
-        if resolved == root or root not in resolved.parents:
-            QMessageBox.critical(self, "删除数据组", "目录不在数据保存位置中，已拒绝删除。")
-            return
+        resolved_groups: list[tuple[LocalDataGroup, Path]] = []
+        for group in groups:
+            resolved = group.path.resolve()
+            if resolved == root or root not in resolved.parents:
+                QMessageBox.critical(
+                    self,
+                    "删除数据组",
+                    f"目录不在数据保存位置中，已拒绝删除。\n{resolved}",
+                )
+                return
+            resolved_groups.append((group, resolved))
+        resolved_groups.sort(key=lambda item: len(item[1].parts))
+        delete_paths: list[Path] = []
+        for _group, resolved in resolved_groups:
+            if not any(parent == resolved or parent in resolved.parents for parent in delete_paths):
+                delete_paths.append(resolved)
+        total_files = sum(group.file_count for group, _resolved in resolved_groups)
+        preview = "\n".join(str(path) for path in delete_paths[:5])
+        if len(delete_paths) > 5:
+            preview += f"\n……另有 {len(delete_paths) - 5} 个目录"
         answer = QMessageBox.question(
             self,
             "删除数据组",
-            f"确定永久删除此数据组及其中 {group.file_count} 个数据文件？\n{resolved}",
+            f"确定永久删除 {len(delete_paths)} 个数据组？\n"
+            f"列表中包含 {total_files} 个数据文件，目录内配套文件也会一并删除。\n\n"
+            f"{preview}",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
         )
         if answer == QMessageBox.StandardButton.Yes:
-            shutil.rmtree(resolved)
-            self.status.setText(f"已删除数据组: {resolved.name}")
+            try:
+                for path in delete_paths:
+                    shutil.rmtree(path)
+            except OSError as exc:
+                QMessageBox.critical(self, "删除数据组", f"删除未能完成。\n\n{exc}")
+                self.refresh()
+                return
+            self.status.setText(f"已删除 {len(delete_paths)} 个数据组")
             if self.state:
-                self.state.message.emit(f"已删除本地数据组: {resolved}")
+                self.state.message.emit(
+                    "已删除本地数据组: " + "；".join(str(path) for path in delete_paths)
+                )
             self.refresh()
 
 

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "cmip-climate-data-explorer"
-version = "0.4.0"
+version = "0.4.1"
 description = "Windows desktop application for CMIP data download and NetCDF-to-GeoTIFF processing"
 readme = "README.md"
 requires-python = ">=3.12,<3.13"

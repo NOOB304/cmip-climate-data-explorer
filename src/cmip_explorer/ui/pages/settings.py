@@ -34,6 +34,7 @@ from cmip_explorer.ui.async_runner import AsyncRunnable
 
 class SettingsPage(QWidget):
     saved = Signal(str)
+    update_bytes_changed = Signal(object, object)
 
     def __init__(self, path: Path, workflow: WorkflowService) -> None:
         super().__init__()
@@ -42,6 +43,10 @@ class SettingsPage(QWidget):
         self.settings = AppSettings.load(path)
         self.pool = QThreadPool.globalInstance()
         self._workers: set[AsyncRunnable] = set()
+        self.update_bytes_changed.connect(
+            self._show_update_progress,
+            Qt.ConnectionType.QueuedConnection,
+        )
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(24, 20, 24, 18)
@@ -260,14 +265,22 @@ class SettingsPage(QWidget):
             self._download_update(release)
 
     def _download_update(self, release: ReleaseInfo) -> None:
-        self._set_update_busy(f"正在下载并校验 {release.version} 更新包…")
+        self._set_update_busy(
+            f"正在下载并校验 {release.version} 更新包…",
+            show_progress=True,
+        )
+        self._show_update_progress(0, release.installer.size_bytes)
         channel = str(self.update_channel.currentData())
 
         async def download() -> Path:
             updater = GitHubReleaseUpdater(channel=channel)
             try:
                 return await updater.download(
-                    release, self.workflow.paths.cache / "updates"
+                    release,
+                    self.workflow.paths.cache / "updates",
+                    progress=lambda written, total: self.update_bytes_changed.emit(
+                        written, total
+                    ),
                 )
             finally:
                 await updater.close()
@@ -314,13 +327,40 @@ class SettingsPage(QWidget):
         self.update_status.setText(f"更新失败: {error}")
         QMessageBox.critical(self, "软件更新", f"无法完成更新操作。\n\n{error}")
 
-    def _set_update_busy(self, message: str) -> None:
+    def _show_update_progress(self, written: object, total: object) -> None:
+        downloaded = max(0, int(written or 0))
+        expected = int(total) if total is not None else 0
+        self.update_progress.setRange(0, 1000)
+        if expected > 0:
+            ratio = min(1.0, downloaded / expected)
+            self.update_progress.setValue(round(ratio * 1000))
+            self.update_progress.setFormat(
+                f"{_human_bytes(downloaded)} / {_human_bytes(expected)} "
+                f"({ratio * 100:.1f}%)"
+            )
+        elif downloaded:
+            self.update_progress.setValue(0)
+            self.update_progress.setFormat(f"已下载 {_human_bytes(downloaded)}")
+        else:
+            self.update_progress.setValue(0)
+            self.update_progress.setFormat("正在获取安装包大小…")
+
+    def _set_update_busy(self, message: str, *, show_progress: bool = False) -> None:
         self.update_button.setEnabled(False)
         self.update_button.setText("处理中…")
         self.update_status.setText(message)
-        self.update_progress.show()
+        self.update_progress.setVisible(show_progress)
 
     def _set_update_idle(self) -> None:
         self.update_button.setEnabled(True)
         self.update_button.setText("检查更新")
         self.update_progress.hide()
+
+
+def _human_bytes(value: int) -> str:
+    size = float(value)
+    for unit in ("B", "KiB", "MiB", "GiB"):
+        if size < 1024 or unit == "GiB":
+            return f"{size:.1f} {unit}"
+        size /= 1024
+    return f"{size:.1f} GiB"

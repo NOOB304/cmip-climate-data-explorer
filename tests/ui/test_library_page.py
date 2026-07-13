@@ -1,9 +1,14 @@
 from pathlib import Path
 
+from PySide6.QtCore import Qt
+from PySide6.QtWidgets import QMessageBox
+
 from cmip_explorer.ui.pages.library import LibraryPage, scan_local_data_groups
 
 
-def test_local_data_is_grouped_by_parent_folder(qtbot, tmp_path: Path) -> None:
+def test_local_data_is_grouped_and_checked_groups_can_be_deleted(
+    qtbot, tmp_path: Path, monkeypatch
+) -> None:
     processed = tmp_path / "Processed" / "Model" / "scenario" / "tas_day"
     downloaded = tmp_path / "NetCDF" / "Model" / "scenario"
     processed.mkdir(parents=True)
@@ -26,6 +31,27 @@ def test_local_data_is_grouped_by_parent_folder(qtbot, tmp_path: Path) -> None:
     page = LibraryPage(tmp_path)
     qtbot.addWidget(page)
     assert page.table.rowCount() == 2
-    assert page.table.columnCount() == 5
+    assert page.table.columnCount() == 6
     assert "4 个数据文件" in page.status.text()
-    assert all("tas_2020.tif" not in page.table.item(row, 0).text() for row in range(2))
+    assert all("tas_2020.tif" not in page.table.item(row, 1).text() for row in range(2))
+    assert not page.delete_button.isEnabled()
+
+    processed_row = next(
+        row
+        for row in range(page.table.rowCount())
+        if Path(page.table.item(row, 0).data(Qt.ItemDataRole.UserRole)) == processed
+    )
+    page.table.item(processed_row, 0).setCheckState(Qt.CheckState.Checked)
+    assert page.delete_button.isEnabled()
+    assert page.delete_button.text() == "删除所选 (1)"
+    monkeypatch.setattr(
+        QMessageBox,
+        "question",
+        lambda *_args: QMessageBox.StandardButton.Yes,
+    )
+
+    page._delete()
+
+    assert not processed.exists()
+    assert downloaded.exists()
+    assert page.table.rowCount() == 1
