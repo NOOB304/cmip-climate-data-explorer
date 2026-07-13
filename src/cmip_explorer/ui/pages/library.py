@@ -8,12 +8,15 @@ from pathlib import Path
 
 from PySide6.QtCore import QPoint, QProcess, Qt
 from PySide6.QtWidgets import (
+    QFrame,
     QHBoxLayout,
     QHeaderView,
     QLabel,
     QMenu,
     QMessageBox,
     QPushButton,
+    QSplitter,
+    QStyle,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -83,11 +86,17 @@ class LibraryPage(QWidget):
         self.state = state
         self.groups: tuple[LocalDataGroup, ...] = ()
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(24, 20, 24, 18)
+        layout.setSpacing(10)
         title = QLabel("本地数据")
         title.setObjectName("PageTitle")
+        subtitle = QLabel("按下载任务和处理目录汇总数据，双击即可在资源管理器中打开")
+        subtitle.setObjectName("PageSubtitle")
         refresh = QPushButton("刷新列表")
+        refresh.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_BrowserReload))
         refresh.clicked.connect(self.refresh)
         open_folder = QPushButton("打开文件夹")
+        open_folder.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_DirOpenIcon))
         open_folder.clicked.connect(self._open_folder)
         delete = QPushButton("删除数据组")
         delete.setObjectName("DangerButton")
@@ -98,6 +107,15 @@ class LibraryPage(QWidget):
         toolbar.addWidget(delete)
         toolbar.addStretch(1)
         self.status = QLabel()
+        self.status.setObjectName("MutedText")
+        metrics = QFrame()
+        metrics.setObjectName("MetricStrip")
+        metrics_layout = QHBoxLayout(metrics)
+        metrics_layout.setContentsMargins(16, 10, 16, 10)
+        self.group_count_value = _add_metric(metrics_layout, "数据组")
+        self.file_count_value = _add_metric(metrics_layout, "文件总数")
+        self.storage_value = _add_metric(metrics_layout, "占用空间")
+        self.recent_value = _add_metric(metrics_layout, "最近更新")
         self.table = QTableWidget(0, 5)
         self.table.setHorizontalHeaderLabels(
             ("数据组", "来源", "包含文件", "总大小", "最近更新")
@@ -111,13 +129,44 @@ class LibraryPage(QWidget):
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
         self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.table.setAlternatingRowColors(True)
+        self.table.verticalHeader().setDefaultSectionSize(44)
         self.table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.table.customContextMenuRequested.connect(self._context_menu)
         self.table.doubleClicked.connect(lambda _index: self._open_folder())
+        self.table.itemSelectionChanged.connect(self._show_details)
+        details = QFrame()
+        details.setObjectName("DetailsPanel")
+        details.setMinimumWidth(265)
+        details.setMaximumWidth(330)
+        details_layout = QVBoxLayout(details)
+        details_layout.setContentsMargins(14, 12, 14, 12)
+        details_title = QLabel("数据组详情")
+        details_title.setObjectName("SectionTitle")
+        self.details = QLabel("选择一个数据组查看完整路径和内容。")
+        self.details.setObjectName("MutedText")
+        self.details.setWordWrap(True)
+        self.details.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        details_open = QPushButton("打开文件夹")
+        details_open.setObjectName("PrimaryButton")
+        details_open.setIcon(
+            self.style().standardIcon(QStyle.StandardPixmap.SP_DirOpenIcon)
+        )
+        details_open.clicked.connect(self._open_folder)
+        details_layout.addWidget(details_title)
+        details_layout.addWidget(self.details)
+        details_layout.addStretch(1)
+        details_layout.addWidget(details_open)
+        splitter = QSplitter(Qt.Orientation.Horizontal)
+        splitter.addWidget(self.table)
+        splitter.addWidget(details)
+        splitter.setStretchFactor(0, 1)
         layout.addWidget(title)
+        layout.addWidget(subtitle)
+        layout.addWidget(metrics)
         layout.addLayout(toolbar)
         layout.addWidget(self.status)
-        layout.addWidget(self.table, 1)
+        layout.addWidget(splitter, 1)
         self.refresh()
 
     def set_output_root(self, output_root: Path) -> None:
@@ -128,8 +177,10 @@ class LibraryPage(QWidget):
         self.groups = scan_local_data_groups(self.output_root)
         self.table.setRowCount(len(self.groups))
         total_files = 0
+        total_size = 0
         for row, group in enumerate(self.groups):
             total_files += group.file_count
+            total_size += group.size_bytes
             try:
                 relative = group.path.relative_to(self.output_root)
                 display_name = str(relative)
@@ -149,10 +200,35 @@ class LibraryPage(QWidget):
                     item.setData(Qt.ItemDataRole.UserRole, row)
                 self.table.setItem(row, column, item)
         self.status.setText(f"共 {len(self.groups)} 个数据组，{total_files} 个数据文件")
+        self.group_count_value.setText(str(len(self.groups)))
+        self.file_count_value.setText(str(total_files))
+        self.storage_value.setText(_human_bytes(total_size))
+        self.recent_value.setText(
+            datetime.fromtimestamp(self.groups[0].modified_at).strftime("%Y-%m-%d %H:%M")
+            if self.groups
+            else "暂无数据"
+        )
+        if self.groups and self.table.currentRow() < 0:
+            self.table.selectRow(0)
+        elif not self.groups:
+            self.details.setText("当前存储目录中没有可识别的数据组。")
 
     def _selected_group(self) -> LocalDataGroup | None:
         row = self.table.currentRow()
         return self.groups[row] if 0 <= row < len(self.groups) else None
+
+    def _show_details(self) -> None:
+        group = self._selected_group()
+        if group is None:
+            self.details.setText("选择一个数据组查看完整路径和内容。")
+            return
+        self.details.setText(
+            f"完整路径\n{group.path}\n\n"
+            f"来源\n{group.category}\n\n"
+            f"包含文件\n{group.contents}\n\n"
+            f"总大小\n{_human_bytes(group.size_bytes)}\n\n"
+            f"最近更新\n{datetime.fromtimestamp(group.modified_at):%Y-%m-%d %H:%M}"
+        )
 
     def _open_folder(self) -> None:
         group = self._selected_group()
@@ -208,3 +284,19 @@ def _human_bytes(value: int) -> str:
             return f"{size:.1f} {unit}"
         size /= 1024
     return "未知"
+
+
+def _add_metric(layout: QHBoxLayout, title: str) -> QLabel:
+    container = QWidget()
+    metric_layout = QVBoxLayout(container)
+    metric_layout.setContentsMargins(8, 0, 24, 0)
+    metric_layout.setSpacing(1)
+    label = QLabel(title)
+    label.setObjectName("MetricLabel")
+    value = QLabel("—")
+    value.setObjectName("MetricValue")
+    metric_layout.addWidget(label)
+    metric_layout.addWidget(value)
+    layout.addWidget(container)
+    layout.addStretch(1)
+    return value

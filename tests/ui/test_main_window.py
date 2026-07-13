@@ -53,7 +53,7 @@ def test_main_window_contains_complete_workbench_navigation(qtbot, tmp_path: Pat
     )
     settings_page = window.stack.widget(5)
     assert settings_page.update_button.text() == "检查更新"
-    assert settings_page.version_label.text() == "当前版本 0.3.3"
+    assert settings_page.version_label.text() == "当前版本 0.4.0"
     assert window.minimumWidth() >= 1180
     database.dispose()
 
@@ -96,7 +96,7 @@ def test_verified_update_runs_silently_and_restarts_application(
         SimpleNamespace(singleShot=lambda delay, callback: timers.append((delay, callback))),
     )
 
-    installer = tmp_path / "CMIP-Climate-Explorer-0.3.3-x64-Setup.exe"
+    installer = tmp_path / "CMIP-Climate-Explorer-0.4.0-x64-Setup.exe"
     settings_page._update_downloaded(installer)
 
     assert started == [

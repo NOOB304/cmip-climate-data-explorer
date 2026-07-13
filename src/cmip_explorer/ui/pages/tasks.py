@@ -5,7 +5,9 @@ from pathlib import Path
 from uuid import UUID
 
 from PySide6.QtCore import QPoint, QProcess, Qt, QThreadPool, QTimer
+from PySide6.QtGui import QColor, QFont
 from PySide6.QtWidgets import (
+    QFrame,
     QHBoxLayout,
     QHeaderView,
     QLabel,
@@ -13,6 +15,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QProgressBar,
     QPushButton,
+    QStyle,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -48,9 +51,14 @@ class TasksPage(QWidget):
 
     def _build_ui(self) -> None:
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(24, 20, 24, 18)
+        layout.setSpacing(10)
         title = QLabel("下载任务")
         title.setObjectName("PageTitle")
+        subtitle = QLabel("集中查看下载、自动重连、校验与格式转换进度")
+        subtitle.setObjectName("PageSubtitle")
         toolbar = QHBoxLayout()
+        toolbar.setSpacing(7)
         for label, action in (
             ("刷新", self.refresh),
             ("暂停", lambda: self._control("pause")),
@@ -59,6 +67,10 @@ class TasksPage(QWidget):
         ):
             button = QPushButton(label)
             button.clicked.connect(action)
+            if label == "刷新":
+                button.setIcon(
+                    self.style().standardIcon(QStyle.StandardPixmap.SP_BrowserReload)
+                )
             toolbar.addWidget(button)
         cancel = QPushButton("取消")
         cancel.setObjectName("DangerButton")
@@ -77,6 +89,7 @@ class TasksPage(QWidget):
         self.activity = QLabel("当前没有运行中的任务")
         self.activity.setObjectName("ActivityBanner")
         self.message = QLabel()
+        self.message.setObjectName("MutedText")
         self.table = QTableWidget(0, 5)
         self.table.setHorizontalHeaderLabels(("状态", "下载进度", "文件", "大小", "保存目录"))
         header = self.table.horizontalHeader()
@@ -85,24 +98,36 @@ class TasksPage(QWidget):
         header.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
         header.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
         header.setSectionResizeMode(4, QHeaderView.ResizeMode.Stretch)
-        self.table.setColumnWidth(1, 260)
+        self.table.setColumnWidth(1, 300)
         self.table.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.table.setTextElideMode(Qt.TextElideMode.ElideMiddle)
+        self.table.setAlternatingRowColors(True)
+        self.table.verticalHeader().setDefaultSectionSize(42)
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
         self.table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.table.customContextMenuRequested.connect(self._context_menu)
         self.table.itemSelectionChanged.connect(self._show_selected_details)
+        details_frame = QFrame()
+        details_frame.setObjectName("DetailsPanel")
+        details_layout = QVBoxLayout(details_frame)
+        details_layout.setContentsMargins(12, 9, 12, 9)
+        details_title = QLabel("任务详情")
+        details_title.setObjectName("SectionTitle")
         self.details = QLabel("选中任务后在这里显示完整文件名和保存位置")
+        self.details.setObjectName("MutedText")
         self.details.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         self.details.setWordWrap(True)
+        details_layout.addWidget(details_title)
+        details_layout.addWidget(self.details)
 
         layout.addWidget(title)
+        layout.addWidget(subtitle)
         layout.addLayout(toolbar)
         layout.addWidget(self.activity)
         layout.addWidget(self.message)
         layout.addWidget(self.table, 1)
-        layout.addWidget(self.details)
+        layout.addWidget(details_frame)
 
     def _control(self, action: str) -> None:
         row = self.table.currentRow()
@@ -250,6 +275,10 @@ class TasksPage(QWidget):
                 if column == 0:
                     item.setData(Qt.ItemDataRole.UserRole, task.task_id)
                     item.setData(Qt.ItemDataRole.UserRole + 1, task.target_path)
+                    item.setForeground(QColor(_status_color(task.status)))
+                    font = QFont(item.font())
+                    font.setWeight(QFont.Weight.DemiBold)
+                    item.setFont(font)
                 self.table.setItem(row, column, item)
             self.table.setCellWidget(row, 1, _progress_bar(task))
             if selected_id == task.task_id:
@@ -355,6 +384,18 @@ def _status_label(value: str) -> str:
         "failed": "失败",
         "canceled": "已取消",
     }.get(value, value)
+
+
+def _status_color(value: str) -> str:
+    if value == TaskStatus.COMPLETED.value:
+        return "#268153"
+    if value in {TaskStatus.FAILED.value, TaskStatus.INTERRUPTED.value}:
+        return "#b84439"
+    if value in {TaskStatus.PAUSED.value, TaskStatus.RETRY_WAIT.value}:
+        return "#a86700"
+    if value == TaskStatus.CANCELED.value:
+        return "#7b898f"
+    return "#11777a"
 
 
 def _human_bytes(value: int | None) -> str:

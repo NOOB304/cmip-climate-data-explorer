@@ -11,6 +11,7 @@ from PySide6.QtWidgets import (
     QDoubleSpinBox,
     QFileDialog,
     QFormLayout,
+    QFrame,
     QHBoxLayout,
     QHeaderView,
     QLabel,
@@ -124,9 +125,14 @@ class SearchPage(QWidget):
 
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
+        root.setContentsMargins(24, 20, 24, 18)
+        root.setSpacing(10)
         title = QLabel("CMIP 数据下载")
         title.setObjectName("PageTitle")
+        subtitle = QLabel("从多个气候数据源检索长期数据系列，并加入可靠的断点续传队列")
+        subtitle.setObjectName("PageSubtitle")
         root.addWidget(title)
+        root.addWidget(subtitle)
         self.provider_tabs = QTabBar()
         self.provider_tabs.setDocumentMode(True)
         self.provider_tabs.setExpanding(False)
@@ -146,9 +152,16 @@ class SearchPage(QWidget):
         content = QWidget()
         content_layout = QHBoxLayout(content)
         content_layout.setContentsMargins(0, 0, 0, 0)
-        filters = QWidget()
-        filters.setFixedWidth(330)
+        content_layout.setSpacing(12)
+        filters = QFrame()
+        filters.setObjectName("FilterPanel")
+        filters.setFixedWidth(310)
         form = QFormLayout(filters)
+        form.setContentsMargins(14, 12, 14, 14)
+        form.setHorizontalSpacing(10)
+        form.setVerticalSpacing(8)
+        filter_title = QLabel("筛选条件")
+        filter_title.setObjectName("SectionTitle")
         self.variable_search = QLineEdit()
         self.variable_search.setPlaceholderText("搜索变量名称或代码")
         self.product = QComboBox()
@@ -182,6 +195,7 @@ class SearchPage(QWidget):
         self.search_button = QPushButton("查询数据")
         self.search_button.setObjectName("PrimaryButton")
         self.search_button.clicked.connect(self.run_search)
+        form.addRow(filter_title)
         form.addRow("数据产品", self.product)
         form.addRow("变量搜索", self.variable_search)
         form.addRow("变量", self.variable_match)
@@ -201,7 +215,10 @@ class SearchPage(QWidget):
 
         results = QWidget()
         results_layout = QVBoxLayout(results)
+        results_layout.setContentsMargins(0, 0, 0, 0)
+        results_layout.setSpacing(8)
         toolbar = QHBoxLayout()
+        toolbar.setSpacing(7)
         self.summary = QLabel("选择变量后查询。时间条件按覆盖范围匹配。")
         self.selected_count = QLabel("已选 0 个数据系列")
         self.selected_count.setObjectName("SelectionCount")
@@ -224,8 +241,6 @@ class SearchPage(QWidget):
         toolbar.addWidget(self.selected_count)
         toolbar.addWidget(export_button)
         toolbar.addWidget(self.open_source_button)
-        toolbar.addWidget(self.previous_button)
-        toolbar.addWidget(self.next_button)
         toolbar.addWidget(self.download_button)
         self.activity = QWidget()
         activity_layout = QHBoxLayout(self.activity)
@@ -240,6 +255,8 @@ class SearchPage(QWidget):
         self.table_widget.setHorizontalHeaderLabels(self.columns)
         self.table_widget.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.table_widget.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
+        self.table_widget.setAlternatingRowColors(True)
+        self.table_widget.verticalHeader().setDefaultSectionSize(38)
         self.table_widget.itemChanged.connect(self._selection_changed)
         self.table_widget.itemSelectionChanged.connect(self._result_row_changed)
         header = self.table_widget.horizontalHeader()
@@ -248,10 +265,20 @@ class SearchPage(QWidget):
             (42, 100, 55, 80, 65, 85, 50, 50, 105, 52, 65, 82, 180)
         ):
             self.table_widget.setColumnWidth(column, width)
-        header.setStretchLastSection(True)
+        self.table_widget.setColumnHidden(11, True)
+        self.table_widget.setColumnHidden(12, True)
+        header.setStretchLastSection(False)
+        pager = QHBoxLayout()
+        pager.addStretch(1)
+        self.page_label = QLabel("第 1 页")
+        self.page_label.setObjectName("MutedText")
+        pager.addWidget(self.previous_button)
+        pager.addWidget(self.page_label)
+        pager.addWidget(self.next_button)
         results_layout.addLayout(toolbar)
         results_layout.addWidget(self.activity)
         results_layout.addWidget(self.table_widget, 1)
+        results_layout.addLayout(pager)
         content_layout.addWidget(filters)
         content_layout.addWidget(results, 1)
         root.addWidget(content, 1)
@@ -435,6 +462,7 @@ class SearchPage(QWidget):
         self._last_request = None
         self._page_number = 1
         self.table_widget.setRowCount(0)
+        self.page_label.setText("第 1 页")
         self.previous_button.setEnabled(False)
         self.next_button.setEnabled(False)
         self.open_source_button.setEnabled(False)
@@ -678,6 +706,7 @@ class SearchPage(QWidget):
 
     def _show_results(self, page: ResultPage) -> None:
         self.files = list(page.files)
+        self.page_label.setText(f"第 {self._page_number} 页")
         if page.facet_counts:
             self._populate_facet_filters(page.facet_counts)
         self._next_cursors = page.next_cursors

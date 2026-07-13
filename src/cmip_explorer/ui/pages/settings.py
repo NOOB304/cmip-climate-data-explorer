@@ -2,13 +2,14 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import QProcess, QThreadPool, QTimer, Signal
+from PySide6.QtCore import QProcess, Qt, QThreadPool, QTimer, Signal
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
     QComboBox,
     QFileDialog,
     QFormLayout,
+    QFrame,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -16,6 +17,7 @@ from PySide6.QtWidgets import (
     QProgressBar,
     QPushButton,
     QSpinBox,
+    QStyle,
     QVBoxLayout,
     QWidget,
 )
@@ -40,10 +42,50 @@ class SettingsPage(QWidget):
         self.settings = AppSettings.load(path)
         self.pool = QThreadPool.globalInstance()
         self._workers: set[AsyncRunnable] = set()
+
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(24, 20, 24, 18)
+        layout.setSpacing(10)
         title = QLabel("设置")
         title.setObjectName("PageTitle")
-        form = QFormLayout()
+        subtitle = QLabel("管理数据保存、下载性能和软件更新。")
+        subtitle.setObjectName("PageSubtitle")
+
+        layout.addWidget(title)
+        layout.addWidget(subtitle)
+        layout.addSpacing(4)
+
+        storage_section, storage_form = self._create_section(
+            "存储与处理",
+            "设置下载文件和处理结果的保存位置。修改后不会移动已有数据。",
+        )
+        self.storage_directory = QLineEdit(str(self.settings.storage_path))
+        self.storage_directory.setPlaceholderText("请选择数据存储目录")
+        choose_storage = QPushButton("选择目录")
+        choose_storage.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_DirOpenIcon))
+        choose_storage.clicked.connect(self._choose_storage)
+        storage_row = QWidget()
+        storage_layout = QHBoxLayout(storage_row)
+        storage_layout.setContentsMargins(0, 0, 0, 0)
+        storage_layout.setSpacing(8)
+        storage_layout.addWidget(self.storage_directory, 1)
+        storage_layout.addWidget(choose_storage)
+        self.auto_convert = QCheckBox("下载完成后自动生成 GeoTIFF")
+        self.auto_convert.setObjectName("Switch")
+        self.auto_convert.setChecked(self.settings.auto_convert_to_tif)
+        storage_form.addRow(
+            self._setting_label("文件存储位置", "优先建议使用空间充足的非系统盘"),
+            storage_row,
+        )
+        storage_form.addRow(
+            self._setting_label("自动转换", "月、年数据自动转换，高频数据保留 NC"),
+            self.auto_convert,
+        )
+
+        download_section, download_form = self._create_section(
+            "下载与网络",
+            "控制同时下载数量、缓存占用和旧节点兼容方式。",
+        )
         self.download_concurrency = QSpinBox()
         self.download_concurrency.setRange(1, 8)
         self.download_concurrency.setValue(self.settings.download_concurrency)
@@ -51,54 +93,110 @@ class SettingsPage(QWidget):
         self.cache_quota.setRange(1, 1000)
         self.cache_quota.setSuffix(" GiB")
         self.cache_quota.setValue(self.settings.cache_quota_gb)
-        self.insecure_http = QCheckBox("兼容没有有效 HTTPS 证书的旧数据节点")
+        self.insecure_http = QCheckBox("允许连接旧式 HTTP 数据节点")
+        self.insecure_http.setObjectName("Switch")
         self.insecure_http.setChecked(self.settings.allow_insecure_http)
+        download_form.addRow(
+            self._setting_label("同时下载任务", "网络不稳定时建议保持 1 至 2 个"),
+            self.download_concurrency,
+        )
+        download_form.addRow(
+            self._setting_label("缓存空间上限", "下载中间文件和更新包共用此空间"),
+            self.cache_quota,
+        )
+        download_form.addRow(
+            self._setting_label("节点兼容模式", "仅在 HTTPS 节点无法访问时启用"),
+            self.insecure_http,
+        )
+
+        update_section, update_form = self._create_section(
+            "软件更新",
+            "从 GitHub Releases 获取经过校验的安装包，更新后会自动重新打开软件。",
+        )
         self.update_channel = QComboBox()
         self.update_channel.addItem("稳定版", "stable")
         self.update_channel.addItem("预览版", "preview")
         self.update_channel.setCurrentIndex(
             max(0, self.update_channel.findData(self.settings.update_channel))
         )
-        self.storage_directory = QLineEdit(str(self.settings.storage_path))
-        choose_storage = QPushButton("选择…")
-        choose_storage.clicked.connect(self._choose_storage)
-        storage_row = QWidget()
-        storage_layout = QHBoxLayout(storage_row)
-        storage_layout.setContentsMargins(0, 0, 0, 0)
-        storage_layout.addWidget(self.storage_directory, 1)
-        storage_layout.addWidget(choose_storage)
-        self.auto_convert = QCheckBox("月/年数据下载后自动转 GeoTIFF（高频数据保留 NC）")
-        self.auto_convert.setChecked(self.settings.auto_convert_to_tif)
-        form.addRow("文件存储位置", storage_row)
-        form.addRow("自动转换", self.auto_convert)
-        form.addRow("下载并发", self.download_concurrency)
-        form.addRow("缓存配额", self.cache_quota)
-        form.addRow("节点兼容", self.insecure_http)
-        form.addRow("更新通道", self.update_channel)
         self.update_button = QPushButton("检查更新")
+        self.update_button.setIcon(
+            self.style().standardIcon(QStyle.StandardPixmap.SP_BrowserReload)
+        )
         self.update_button.clicked.connect(self._check_for_update)
         update_row = QWidget()
         update_layout = QHBoxLayout(update_row)
         update_layout.setContentsMargins(0, 0, 0, 0)
+        update_layout.setSpacing(10)
         self.version_label = QLabel(f"当前版本 {__version__}")
+        self.version_label.setObjectName("MutedText")
         update_layout.addWidget(self.version_label)
         update_layout.addStretch(1)
         update_layout.addWidget(self.update_button)
-        form.addRow("软件更新", update_row)
         self.update_status = QLabel("点击按钮从 GitHub Releases 检查最新版本。")
+        self.update_status.setObjectName("MutedText")
         self.update_status.setWordWrap(True)
         self.update_progress = QProgressBar()
         self.update_progress.setRange(0, 0)
         self.update_progress.hide()
+
+        update_form.addRow(self._setting_label("更新通道"), self.update_channel)
+        update_form.addRow(self._setting_label("当前状态"), update_row)
+        update_form.addRow(self._setting_label("更新说明"), self.update_status)
+        update_form.addRow(QLabel(), self.update_progress)
+
         save = QPushButton("保存设置")
         save.setObjectName("PrimaryButton")
+        save.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_DialogSaveButton))
         save.clicked.connect(self._save)
-        layout.addWidget(title)
-        layout.addLayout(form)
-        layout.addWidget(self.update_status)
-        layout.addWidget(self.update_progress)
-        layout.addWidget(save, 0)
+
+        layout.addWidget(storage_section)
+        layout.addWidget(download_section)
+        layout.addWidget(update_section)
         layout.addStretch(1)
+        actions = QHBoxLayout()
+        actions.addStretch(1)
+        actions.addWidget(save)
+        layout.addLayout(actions)
+
+    @staticmethod
+    def _setting_label(title: str, helper: str = "") -> QWidget:
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+        layout.setContentsMargins(0, 0, 12, 0)
+        layout.setSpacing(1)
+        title_label = QLabel(title)
+        title_label.setObjectName("SectionTitle")
+        layout.addWidget(title_label)
+        if helper:
+            helper_label = QLabel(helper)
+            helper_label.setObjectName("SectionDescription")
+            helper_label.setWordWrap(True)
+            layout.addWidget(helper_label)
+        return widget
+
+    @staticmethod
+    def _create_section(title: str, description: str) -> tuple[QFrame, QFormLayout]:
+        section = QFrame()
+        section.setObjectName("SettingsSection")
+        section_layout = QVBoxLayout(section)
+        section_layout.setContentsMargins(4, 10, 4, 14)
+        section_layout.setSpacing(4)
+        title_label = QLabel(title)
+        title_label.setObjectName("SectionTitle")
+        description_label = QLabel(description)
+        description_label.setObjectName("SectionDescription")
+        description_label.setWordWrap(True)
+        form = QFormLayout()
+        form.setContentsMargins(0, 8, 0, 0)
+        form.setHorizontalSpacing(24)
+        form.setVerticalSpacing(12)
+        form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
+        form.setLabelAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        section_layout.addWidget(title_label)
+        section_layout.addWidget(description_label)
+        section_layout.addLayout(form)
+        return section, form
 
     def _choose_storage(self) -> None:
         selected = QFileDialog.getExistingDirectory(
