@@ -167,19 +167,12 @@ class SettingsPage(QWidget):
 
     @staticmethod
     def _setting_label(title: str, helper: str = "") -> QWidget:
-        widget = QWidget()
-        layout = QVBoxLayout(widget)
-        layout.setContentsMargins(0, 0, 12, 0)
-        layout.setSpacing(1)
-        title_label = QLabel(title)
-        title_label.setObjectName("SectionTitle")
-        layout.addWidget(title_label)
+        label = QLabel(title)
+        label.setObjectName("SectionTitle")
+        label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
         if helper:
-            helper_label = QLabel(helper)
-            helper_label.setObjectName("SectionDescription")
-            helper_label.setWordWrap(True)
-            layout.addWidget(helper_label)
-        return widget
+            label.setToolTip(helper)
+        return label
 
     @staticmethod
     def _create_section(title: str, description: str) -> tuple[QFrame, QFormLayout]:

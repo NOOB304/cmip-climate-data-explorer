@@ -27,7 +27,7 @@ class LegacySolrBackend:
         self.client = client or httpx.AsyncClient(
             timeout=httpx.Timeout(25.0, connect=10.0),
             follow_redirects=True,
-            headers={"User-Agent": "CMIP-Climate-Explorer/0.5.0"},
+            headers={"User-Agent": "CMIP-Climate-Explorer/0.5.1"},
         )
 
     async def detect_capabilities(self) -> BackendCapabilities:

@@ -6,6 +6,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QMessageBox, QProgressBar
 
 import cmip_explorer.ui.pages.settings as settings_module
+from cmip_explorer import __version__
 from cmip_explorer.application import WorkflowService
 from cmip_explorer.config import AppPaths
 from cmip_explorer.domain.enums import DownloadMode
@@ -54,7 +55,7 @@ def test_main_window_contains_complete_workbench_navigation(qtbot, tmp_path: Pat
     )
     settings_page = window.stack.widget(5)
     assert settings_page.update_button.text() == "检查更新"
-    assert settings_page.version_label.text() == "当前版本 0.5.0"
+    assert settings_page.version_label.text() == f"当前版本 {__version__}"
     settings_page._show_update_progress(50 * 1024**2, 100 * 1024**2)
     assert settings_page.update_progress.maximum() == 1000
     assert settings_page.update_progress.value() == 500
