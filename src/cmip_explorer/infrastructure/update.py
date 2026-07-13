@@ -4,6 +4,7 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from urllib.parse import unquote, urlsplit
 
 import httpx
 
@@ -12,6 +13,7 @@ from cmip_explorer.infrastructure.download import HttpRangeDownloader
 
 UPDATE_REPOSITORY = "NOOB304/cmip-climate-data-explorer"
 GITHUB_API = "https://api.github.com"
+GITHUB_WEB = "https://github.com"
 _INSTALLER_PATTERN = re.compile(
     r"^CMIP-Climate-Explorer-.+-x64-Setup\.exe$", re.IGNORECASE
 )
@@ -77,11 +79,7 @@ class GitHubReleaseUpdater:
 
     async def check(self) -> ReleaseInfo | None:
         if self.channel == "stable":
-            response = await self.client.get(
-                f"{GITHUB_API}/repos/{self.repository}/releases/latest"
-            )
-            response.raise_for_status()
-            candidates = (response.json(),)
+            latest = await self._stable_release_without_api()
         else:
             response = await self.client.get(
                 f"{GITHUB_API}/repos/{self.repository}/releases",
@@ -89,20 +87,50 @@ class GitHubReleaseUpdater:
             )
             response.raise_for_status()
             candidates = tuple(response.json())
-
-        releases = [
-            parsed
-            for payload in candidates
-            if not payload.get("draft")
-            and (self.channel == "preview" or not payload.get("prerelease"))
-            if (parsed := _parse_release(payload)) is not None
-        ]
-        if not releases:
-            raise UpdateError("GitHub Release 中没有可验证的 Windows 安装包")
-        latest = max(releases, key=lambda item: _version_key(item.version))
+            releases = [
+                parsed
+                for payload in candidates
+                if not payload.get("draft")
+                if (parsed := _parse_release(payload)) is not None
+            ]
+            if not releases:
+                raise UpdateError("GitHub Release 中没有可验证的 Windows 安装包")
+            latest = max(releases, key=lambda item: _version_key(item.version))
         if _version_key(latest.version) <= _version_key(self.current_version):
             return None
         return latest
+
+    async def _stable_release_without_api(self) -> ReleaseInfo:
+        response = await self.client.get(
+            f"{GITHUB_WEB}/{self.repository}/releases/latest",
+            headers={"Accept": "text/html"},
+        )
+        response.raise_for_status()
+        parts = urlsplit(str(response.url)).path.rstrip("/").split("/")
+        if len(parts) < 2 or parts[-2] != "tag":
+            raise UpdateError("GitHub 没有返回最新正式版标签")
+        tag_name = unquote(parts[-1])
+        match = _VERSION_PATTERN.fullmatch(tag_name)
+        if match is None or match.group(4) is not None:
+            raise UpdateError(f"GitHub 最新正式版标签无效: {tag_name}")
+        version = tag_name.removeprefix("v")
+        installer_name = f"CMIP-Climate-Explorer-{version}-x64-Setup.exe"
+        download_root = f"{GITHUB_WEB}/{self.repository}/releases/download/{tag_name}"
+        return ReleaseInfo(
+            version=version,
+            tag_name=tag_name,
+            name=f"CMIP Climate Explorer {version}",
+            notes="",
+            page_url=str(response.url),
+            installer=ReleaseAsset(
+                name=installer_name,
+                url=f"{download_root}/{installer_name}",
+            ),
+            checksum=ReleaseAsset(
+                name="SHA256SUMS.txt",
+                url=f"{download_root}/SHA256SUMS.txt",
+            ),
+        )
 
     async def download(
         self,

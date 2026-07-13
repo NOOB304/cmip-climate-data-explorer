@@ -40,11 +40,17 @@ def _release(version: str, installer_size: int, *, checksum: bool = True) -> dic
 async def test_update_service_checks_downloads_and_verifies_release(tmp_path: Path) -> None:
     installer = b"verified windows installer"
     digest = hashlib.sha256(installer).hexdigest()
-    release = _release("0.3.0", len(installer))
 
     def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.host == "api.github.com":
-            return httpx.Response(200, json=release)
+        if request.url.path.endswith("/releases/latest"):
+            return httpx.Response(
+                302,
+                headers={
+                    "Location": "https://github.com/owner/repository/releases/tag/v0.3.0"
+                },
+            )
+        if request.url.path.endswith("/releases/tag/v0.3.0"):
+            return httpx.Response(200, text="release")
         if request.url.path.endswith("SHA256SUMS.txt"):
             return httpx.Response(
                 200,
@@ -73,9 +79,18 @@ async def test_update_service_checks_downloads_and_verifies_release(tmp_path: Pa
 
 
 async def test_update_service_returns_none_for_current_version() -> None:
-    release = _release("0.2.9", 10)
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/releases/latest"):
+            return httpx.Response(
+                302,
+                headers={
+                    "Location": "https://github.com/owner/repository/releases/tag/v0.2.9"
+                },
+            )
+        return httpx.Response(200, text="release")
+
     async with httpx.AsyncClient(
-        transport=httpx.MockTransport(lambda _request: httpx.Response(200, json=release))
+        transport=httpx.MockTransport(handler), follow_redirects=True
     ) as client:
         updater = GitHubReleaseUpdater(
             "owner/repository", current_version="0.2.9", client=client
@@ -86,10 +101,15 @@ async def test_update_service_returns_none_for_current_version() -> None:
 async def test_update_service_rejects_release_without_checksum() -> None:
     release = _release("0.3.0", 10, checksum=False)
     async with httpx.AsyncClient(
-        transport=httpx.MockTransport(lambda _request: httpx.Response(200, json=release))
+        transport=httpx.MockTransport(
+            lambda _request: httpx.Response(200, json=[release])
+        )
     ) as client:
         updater = GitHubReleaseUpdater(
-            "owner/repository", current_version="0.2.9", client=client
+            "owner/repository",
+            current_version="0.2.9",
+            channel="preview",
+            client=client,
         )
         with pytest.raises(UpdateError, match="没有可验证"):
             await updater.check()
