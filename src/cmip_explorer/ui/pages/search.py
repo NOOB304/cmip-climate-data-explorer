@@ -70,6 +70,7 @@ class SearchPage(QWidget):
         "文件名",
     )
     facet_names = ("source_id", "experiment_id", "table_id", "frequency", "grid_label")
+    common_scenario_filter = "__scenario_mip__"
     common_scenarios = (
         "historical",
         "ssp119",
@@ -170,7 +171,10 @@ class SearchPage(QWidget):
         self.variable_match = QComboBox()
         self.variable_match.setMinimumContentsLength(24)
         self.source = self._filter_combo("全部模型")
-        self.experiment = self._filter_combo("全部情景（分页显示）")
+        self.experiment = self._filter_combo("全部实验情景（分页显示）")
+        self.experiment.insertItem(
+            0, "常用未来情景（推荐）", self.common_scenario_filter
+        )
         for scenario in self.common_scenarios:
             self.experiment.addItem(_scenario_label(scenario), scenario)
         self.table_filter = self._filter_combo("全部数据表")
@@ -368,7 +372,7 @@ class SearchPage(QWidget):
         try:
             for combo, label in (
                 (self.source, "全部模型"),
-                (self.experiment, "全部情景（分页显示）"),
+                (self.experiment, "全部实验情景（分页显示）"),
                 (self.table_filter, "全部数据表"),
                 (self.frequency, "全部频率"),
                 (self.grid, "全部网格"),
@@ -376,6 +380,9 @@ class SearchPage(QWidget):
                 combo.clear()
                 combo.addItem(label, "")
             if self._provider_id == "esgf":
+                self.experiment.insertItem(
+                    0, "常用未来情景（推荐）", self.common_scenario_filter
+                )
                 for scenario in self.common_scenarios:
                     self.experiment.addItem(_scenario_label(scenario), scenario)
         finally:
@@ -575,13 +582,18 @@ class SearchPage(QWidget):
                 if visible_name not in visible_filters:
                     continue
                 value = str(combo.currentData() or "")
+                if name == "experiment_id" and value == self.common_scenario_filter:
+                    facets.append(
+                        FacetConstraint(name="activity_id", values=("ScenarioMIP",))
+                    )
+                    continue
                 if value:
                     facets.append(FacetConstraint(name=name, values=(value,)))
         return SearchRequest(
             provider_id=self._provider_id,
             product_id=str(self.product.currentData() or "cmip6"),
             facets=tuple(facets),
-            replicas="masters",
+            replicas="all" if self._provider_id == "esgf" else "masters",
             start_year=self.start_year.value(),
             end_year=self.end_year.value(),
             page_size=100,
@@ -995,7 +1007,11 @@ class SearchPage(QWidget):
                     values = list(dict.fromkeys((*self.common_scenarios, *values)))
                 combo.clear()
                 if name == "experiment_id":
-                    combo.addItem("全部情景（分页显示）", "")
+                    if self._provider_id == "esgf":
+                        combo.addItem(
+                            "常用未来情景（推荐）", self.common_scenario_filter
+                        )
+                    combo.addItem("全部实验情景（分页显示）", "")
                 else:
                     combo.addItem(all_label, "")
                 for value in values:

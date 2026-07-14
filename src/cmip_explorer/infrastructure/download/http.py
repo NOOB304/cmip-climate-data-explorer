@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import json
 import os
+import re
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -54,10 +55,14 @@ class HttpRangeDownloader:
         client: httpx.AsyncClient | None = None,
         chunk_size: int = 1024 * 1024,
         reconnect_delays: tuple[float, ...] = DEFAULT_RECONNECT_DELAYS,
+        request_chunk_bytes: int | None = None,
     ) -> None:
         self.client = client
         self.chunk_size = chunk_size
         self.reconnect_delays = tuple(max(0.0, delay) for delay in reconnect_delays)
+        self.request_chunk_bytes = (
+            max(chunk_size, request_chunk_bytes) if request_chunk_bytes else None
+        )
 
     @staticmethod
     def _new_client() -> httpx.AsyncClient:
@@ -160,43 +165,75 @@ class HttpRangeDownloader:
         part = target.with_suffix(target.suffix + ".part")
         sidecar = target.with_suffix(target.suffix + ".part.json")
         remote = await self._remote_metadata(client, url, expected_size)
-        resume_at = self._resume_offset(part, sidecar, remote)
-        headers = {"Range": f"bytes={resume_at}-"} if resume_at else {}
+        resume_at = self._resume_offset(
+            part,
+            sidecar,
+            remote,
+            allow_weak=bool(expected_checksum),
+        )
+        initial_resume_at = resume_at
+        written = resume_at
 
-        async with client.stream("GET", url, headers=headers) as response:
-            if resume_at and response.status_code != 206:
-                resume_at = 0
-                part.unlink(missing_ok=True)
-                sidecar.unlink(missing_ok=True)
-                return await self._download_with_client(
-                    client,
-                    url,
-                    target,
-                    expected_size=expected_size,
-                    expected_checksum=expected_checksum,
-                    checksum_type=checksum_type,
-                    progress=progress,
-                    control=control,
+        while remote.expected_size is None or written < remote.expected_size:
+            requested_end = _range_end(
+                written, remote.expected_size, self.request_chunk_bytes
+            )
+            range_requested = written > 0 or requested_end is not None
+            range_value = (
+                f"bytes={written}-{requested_end}"
+                if requested_end is not None
+                else f"bytes={written}-"
+            )
+            headers = {"Range": range_value} if range_requested else {}
+            segment_start = written
+
+            async with client.stream("GET", url, headers=headers) as response:
+                if written and response.status_code != 206:
+                    part.unlink(missing_ok=True)
+                    sidecar.unlink(missing_ok=True)
+                    return await self._download_with_client(
+                        client,
+                        url,
+                        target,
+                        expected_size=expected_size,
+                        expected_checksum=expected_checksum,
+                        checksum_type=checksum_type,
+                        progress=progress,
+                        control=control,
+                    )
+                response.raise_for_status()
+                if response.status_code == 206:
+                    _validate_content_range(response, written, requested_end)
+                sidecar.write_text(
+                    json.dumps(asdict(remote), sort_keys=True), encoding="utf-8"
                 )
-            response.raise_for_status()
-            sidecar.write_text(json.dumps(asdict(remote), sort_keys=True), encoding="utf-8")
-            mode = "ab" if resume_at else "wb"
-            written = resume_at
-            with part.open(mode) as destination:
-                async for chunk in response.aiter_bytes(self.chunk_size):
-                    if control.cancel_requested:
-                        raise DownloadCancelled()
-                    while control.pause_requested:
+                mode = "ab" if written else "wb"
+                with part.open(mode) as destination:
+                    async for chunk in response.aiter_bytes(self.chunk_size):
                         if control.cancel_requested:
                             raise DownloadCancelled()
-                        await asyncio.sleep(0.2)
-                    destination.write(chunk)
-                    written += len(chunk)
-                    if progress:
-                        progress(written, remote.expected_size)
-                    await asyncio.sleep(0)
-                destination.flush()
-                os.fsync(destination.fileno())
+                        while control.pause_requested:
+                            if control.cancel_requested:
+                                raise DownloadCancelled()
+                            await asyncio.sleep(0.2)
+                        destination.write(chunk)
+                        written += len(chunk)
+                        if progress:
+                            progress(written, remote.expected_size)
+                        await asyncio.sleep(0)
+                    destination.flush()
+                    os.fsync(destination.fileno())
+
+            if remote.expected_size is None or written >= remote.expected_size:
+                break
+            if response.status_code != 206 or written <= segment_start:
+                raise DownloadIncompleteError(
+                    f"download stopped at {written} of {remote.expected_size} bytes"
+                )
+            if requested_end is not None and written != requested_end + 1:
+                raise DownloadIncompleteError(
+                    f"range ended at {written - 1}, expected {requested_end}"
+                )
 
         if remote.expected_size is not None and part.stat().st_size != remote.expected_size:
             actual_size = part.stat().st_size
@@ -209,7 +246,7 @@ class HttpRangeDownloader:
         sha256 = validation_digest if normalized_checksum == "SHA256" else _digest(part, "SHA256")
         os.replace(part, target)
         sidecar.unlink(missing_ok=True)
-        return DownloadResult(target, target.stat().st_size, sha256, resume_at)
+        return DownloadResult(target, target.stat().st_size, sha256, initial_resume_at)
 
     async def _remote_metadata(
         self, client: httpx.AsyncClient, url: str, expected_size: int | None
@@ -229,18 +266,26 @@ class HttpRangeDownloader:
             return PartMetadata(url, None, None, expected_size)
 
     @staticmethod
-    def _resume_offset(part: Path, sidecar: Path, remote: PartMetadata) -> int:
+    def _resume_offset(
+        part: Path,
+        sidecar: Path,
+        remote: PartMetadata,
+        *,
+        allow_weak: bool = False,
+    ) -> int:
         if not part.exists() or not sidecar.exists():
             return 0
         try:
             saved = PartMetadata(**json.loads(sidecar.read_text(encoding="utf-8")))
         except (OSError, ValueError, TypeError):
             return 0
-        validators_match = (
-            _same_resource(saved.source_url, remote.source_url)
-            and saved.etag == remote.etag
-            and saved.last_modified == remote.last_modified
-            and saved.expected_size == remote.expected_size
+        same_resource = _same_resource(saved.source_url, remote.source_url)
+        same_size = saved.expected_size == remote.expected_size
+        exact_validators = (
+            saved.etag == remote.etag and saved.last_modified == remote.last_modified
+        )
+        validators_match = same_resource and same_size and (
+            exact_validators or (allow_weak and remote.expected_size is not None)
         )
         if not validators_match:
             return 0
@@ -269,6 +314,32 @@ def _same_resource(left: str, right: str) -> bool:
         and left_parts.path == right_parts.path
         and left_parts.query == right_parts.query
     )
+
+
+def _range_end(start: int, total: int | None, chunk_bytes: int | None) -> int | None:
+    if total is None or chunk_bytes is None:
+        return None
+    return min(total - 1, start + chunk_bytes - 1)
+
+
+def _validate_content_range(
+    response: httpx.Response, requested_start: int, requested_end: int | None
+) -> None:
+    value = response.headers.get("Content-Range", "")
+    if not value:
+        return
+    match = re.fullmatch(r"bytes\s+(\d+)-(\d+)/(?:\d+|\*)", value)
+    if match is None:
+        raise DownloadIncompleteError("range response did not include a valid Content-Range")
+    actual_start, actual_end = (int(item) for item in match.groups())
+    if actual_start != requested_start:
+        raise DownloadIncompleteError(
+            f"range started at {actual_start}, expected {requested_start}"
+        )
+    if requested_end is not None and actual_end != requested_end:
+        raise DownloadIncompleteError(
+            f"range ended at {actual_end}, expected {requested_end}"
+        )
 
 
 def _is_retryable(error: Exception) -> bool:

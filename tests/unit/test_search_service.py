@@ -131,6 +131,32 @@ async def test_empty_raw_page_is_skipped_before_results_are_shown() -> None:
     assert "已跳过 1 个" in result.warnings[0]
 
 
+async def test_sparse_visible_pages_are_accumulated_before_display() -> None:
+    first = LogicalFile(logical_key="first", filename="first.nc")
+    second = LogicalFile(logical_key="second", filename="second.nc")
+    backend = PagedBackendStub(
+        "primary",
+        {
+            None: SearchPage(
+                files=(first,),
+                next_cursors={"primary": 100},
+            ),
+            100: SearchPage(
+                files=(second,),
+                next_cursors={"primary": 200},
+            ),
+        },
+    )
+
+    result = await MultiBackendSearchService(RegistryStub(backend)).search(
+        SearchRequest(page_size=2)
+    )
+
+    assert result.files == (first, second)
+    assert result.next_cursors == {"primary": 200}
+    assert backend.cursors == [None, 100]
+
+
 async def test_pagination_cursor_never_falls_back_to_another_node() -> None:
     primary = PagedBackendStub("primary", {100: RuntimeError("node failed")})
     fallback = PagedBackendStub(

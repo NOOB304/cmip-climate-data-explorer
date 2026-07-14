@@ -208,6 +208,88 @@ async def test_interrupted_download_auto_reconnects_from_partial_file(
     assert reconnects == [(1, 1, 0)]
 
 
+async def test_large_download_is_split_into_bounded_range_requests(tmp_path: Path) -> None:
+    payload = b"abcdefghijklmnopqrstuvwxyz"
+    ranges: list[str] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "HEAD":
+            return httpx.Response(
+                200,
+                headers={"Content-Length": str(len(payload)), "ETag": "segmented"},
+            )
+        value = request.headers["Range"]
+        ranges.append(value)
+        start_text, end_text = value.removeprefix("bytes=").split("-")
+        start, end = int(start_text), int(end_text)
+        return httpx.Response(
+            206,
+            headers={"Content-Range": f"bytes {start}-{end}/{len(payload)}"},
+            content=payload[start : end + 1],
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        result = await HttpRangeDownloader(
+            client=client,
+            chunk_size=4,
+            request_chunk_bytes=8,
+        ).download(
+            "https://example.test/large.bin",
+            tmp_path / "large.bin",
+            expected_size=len(payload),
+            expected_checksum=hashlib.sha256(payload).hexdigest(),
+        )
+
+    assert result.path.read_bytes() == payload
+    assert ranges == ["bytes=0-7", "bytes=8-15", "bytes=16-23", "bytes=24-25"]
+
+
+async def test_checksum_verified_download_resumes_when_cdn_etag_changes(
+    tmp_path: Path,
+) -> None:
+    payload = b"immutable-release-asset"
+    url = "https://example.test/release.exe"
+    target = tmp_path / "release.exe"
+    part = target.with_suffix(".exe.part")
+    sidecar = target.with_suffix(".exe.part.json")
+    part.write_bytes(payload[:9])
+    sidecar.write_text(
+        json.dumps(
+            {
+                "source_url": url,
+                "etag": "old-cdn-etag",
+                "last_modified": None,
+                "expected_size": len(payload),
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "HEAD":
+            return httpx.Response(
+                200,
+                headers={"Content-Length": str(len(payload)), "ETag": "new-cdn-etag"},
+            )
+        assert request.headers["Range"] == "bytes=9-"
+        return httpx.Response(
+            206,
+            headers={"Content-Range": f"bytes 9-{len(payload) - 1}/{len(payload)}"},
+            content=payload[9:],
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        result = await HttpRangeDownloader(client=client).download(
+            url,
+            target,
+            expected_size=len(payload),
+            expected_checksum=hashlib.sha256(payload).hexdigest(),
+        )
+
+    assert result.resumed_from == 9
+    assert target.read_bytes() == payload
+
+
 async def test_resume_keeps_partial_when_only_url_scheme_changes(tmp_path: Path) -> None:
     payload = b"scheme-compatible-resume"
     target = tmp_path / "scheme.nc"

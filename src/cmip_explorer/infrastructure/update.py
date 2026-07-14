@@ -152,6 +152,7 @@ class GitHubReleaseUpdater:
         downloader = HttpRangeDownloader(
             client=self.client,
             reconnect_delays=self.reconnect_delays,
+            request_chunk_bytes=8 * 1024 * 1024,
         )
         await downloader.download(
             release.installer.url,

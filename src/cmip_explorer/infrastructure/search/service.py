@@ -6,11 +6,13 @@ import httpx
 
 from cmip_explorer.domain.models import FacetConstraint, LogicalFile, SearchPage, SearchRequest
 
+from .normalizer import merge_logical_files
 from .registry import BackendRegistry
 
 
 class MultiBackendSearchService:
     max_empty_page_skips = 20
+    max_page_scans = 20
 
     def __init__(self, registry: BackendRegistry) -> None:
         self.registry = registry
@@ -49,22 +51,41 @@ class MultiBackendSearchService:
 
     async def _search_visible_page(self, backend, request, cursor):
         skipped = 0
+        scanned = 0
         seen_cursors: set[str] = set()
+        collected: list[LogicalFile] = []
+        first_result: SearchPage | None = None
         while True:
             result = await self._search_with_retry(backend, request, cursor)
-            if result.files:
-                return result, skipped
+            first_result = first_result or result
+            collected.extend(result.files)
+            merged = merge_logical_files(collected)
             next_cursor = result.next_cursors.get(backend.definition.id)
+            scanned += 1
+            if merged and (len(merged) >= request.page_size or next_cursor is None):
+                return _merge_scanned_pages(first_result, result, merged), skipped
             if next_cursor is None:
-                return result, skipped
+                return _merge_scanned_pages(first_result, result, merged), skipped
+            if scanned >= self.max_page_scans:
+                if merged:
+                    partial = _merge_scanned_pages(first_result, result, merged)
+                    warning = (
+                        f"{backend.definition.name}: 当前页已扫描 {scanned} 个原始分页 "
+                        "其余匹配项可继续翻页查看"
+                    )
+                    return partial.model_copy(
+                        update={"warnings": (*partial.warnings, warning)}
+                    ), skipped
+                raise RuntimeError("连续分页均无匹配记录 请缩小查询条件后重试")
             marker = repr(next_cursor)
             if marker in seen_cursors or next_cursor == cursor:
                 raise RuntimeError("数据源返回了重复分页位置")
-            if skipped >= self.max_empty_page_skips:
+            if not result.files:
+                skipped += 1
+            if skipped >= self.max_empty_page_skips and not merged:
                 raise RuntimeError("连续分页均无匹配记录 请缩小查询条件后重试")
             seen_cursors.add(marker)
             cursor = next_cursor
-            skipped += 1
 
     async def historical_companion(
         self, file: LogicalFile, requested_start_year: int
@@ -158,3 +179,17 @@ def _coverage_start_year(file: LogicalFile) -> int | None:
         return int(file.temporal.start[:4]) if file.temporal.start else None
     except ValueError:
         return None
+
+
+def _merge_scanned_pages(
+    first: SearchPage, last: SearchPage, files: tuple[LogicalFile, ...]
+) -> SearchPage:
+    return first.model_copy(
+        update={
+            "files": files,
+            "known_unique_count": len(files),
+            "exact_total": first.exact_total and last.exact_total,
+            "next_cursors": last.next_cursors,
+            "warnings": tuple(dict.fromkeys((*first.warnings, *last.warnings))),
+        }
+    )

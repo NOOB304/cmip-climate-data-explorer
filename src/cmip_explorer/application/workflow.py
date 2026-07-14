@@ -77,7 +77,10 @@ class WorkflowService:
         self.subset_service = subset_service or StrictSubsetService()
         # The workflow owns retries and mirror switching for climate files.
         # Keep the transport retry-free here so the two layers cannot multiply.
-        self.downloader = downloader or HttpRangeDownloader(reconnect_delays=())
+        self.downloader = downloader or HttpRangeDownloader(
+            reconnect_delays=(),
+            request_chunk_bytes=32 * 1024 * 1024,
+        )
         self.allow_insecure_http = allow_insecure_http
         self.storage_root = storage_root or paths.outputs
         self.storage_root.mkdir(parents=True, exist_ok=True)
