@@ -291,11 +291,11 @@ class SettingsPage(QWidget):
         self._start_update_worker(worker, self._update_downloaded)
 
     def _update_downloaded(self, installer: Path) -> None:
-        self._set_update_idle()
-        self.update_status.setText(f"更新包校验通过: {installer.name}")
+        self._set_update_busy("更新包校验通过，正在静默安装并重启软件…")
         try:
             launcher = self._write_update_launcher(installer)
         except OSError as exc:
+            self._set_update_idle()
             QMessageBox.critical(self, "软件更新", f"无法创建后台更新程序。\n\n{exc}")
             return
         result = QProcess.startDetached(
@@ -320,6 +320,7 @@ class SettingsPage(QWidget):
         )
         started = result[0] if isinstance(result, tuple) else bool(result)
         if not started:
+            self._set_update_idle()
             QMessageBox.critical(self, "软件更新", "无法启动后台更新程序。")
             return
         QTimer.singleShot(100, QApplication.quit)

@@ -1,5 +1,6 @@
 import asyncio
 from contextlib import suppress
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import httpx
@@ -39,7 +40,7 @@ async def test_direct_download_reports_progress_and_completes(tmp_path: Path) ->
     workflow = WorkflowService(
         paths,
         repository,
-        downloader=HttpRangeDownloader(client=client, chunk_size=4),
+        downloader=HttpRangeDownloader(client=client, chunk_size=4, reconnect_delays=()),
         storage_root=tmp_path / "climate-data",
         auto_convert_to_tif=False,
     )
@@ -178,7 +179,7 @@ async def test_network_failure_reconnects_inside_the_same_task(tmp_path: Path) -
     workflow = WorkflowService(
         paths,
         repository,
-        downloader=HttpRangeDownloader(client=client, chunk_size=4),
+        downloader=HttpRangeDownloader(client=client, chunk_size=4, reconnect_delays=()),
         storage_root=tmp_path / "climate-data",
         auto_convert_to_tif=False,
         reconnect_delays=(0.0,),
@@ -219,10 +220,58 @@ def test_duplicate_enqueue_and_cancel_keep_one_stable_task(tmp_path: Path) -> No
         assert first_created is True
         assert second_created is False
         assert first_id == second_id
+        assert repository.download_candidates(first_id) == (
+            "https://example.test/file.nc",
+        )
         assert len(repository.list_tasks()) == 1
         assert workflow.cancel_task(first_id) is True
         assert len(repository.list_tasks()) == 1
         assert repository.list_tasks()[0].status == TaskStatus.CANCELED.value
+    finally:
+        database.dispose()
+
+
+def test_default_workflow_uses_one_visible_retry_layer(tmp_path: Path) -> None:
+    paths = _test_paths(tmp_path)
+    paths.ensure()
+    database = Database(paths.database)
+    database.initialize()
+    repository = TaskRepository(database)
+    workflow = WorkflowService(paths, repository)
+    try:
+        assert workflow.downloader.reconnect_delays == ()
+        assert workflow.reconnect_delays == (2.0, 5.0, 10.0, 20.0, 30.0)
+    finally:
+        database.dispose()
+
+
+def test_retry_wait_summary_exposes_attempt_and_resume_time(tmp_path: Path) -> None:
+    paths = _test_paths(tmp_path)
+    paths.ensure()
+    database = Database(paths.database)
+    database.initialize()
+    repository = TaskRepository(database)
+    workflow = WorkflowService(paths, repository)
+    try:
+        job = workflow.create_job("retry status", {})
+        task_id, _ = workflow.enqueue_download(job, _test_file(100))
+        repository.transition(task_id, TaskStatus.RESOLVING)
+        repository.transition(task_id, TaskStatus.PROBING)
+        repository.transition(task_id, TaskStatus.DOWNLOADING)
+        retry_at = (datetime.now(UTC) + timedelta(seconds=5)).isoformat()
+        repository.transition(
+            task_id,
+            TaskStatus.RETRY_WAIT,
+            {
+                "reconnect_attempt": 2,
+                "retry_maximum": 5,
+                "retry_at": retry_at,
+            },
+        )
+        task = repository.list_tasks()[0]
+        assert task.retry_attempt == 2
+        assert task.retry_maximum == 5
+        assert task.retry_at == retry_at
     finally:
         database.dispose()
 

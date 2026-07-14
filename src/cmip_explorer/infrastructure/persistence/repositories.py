@@ -4,7 +4,7 @@ import json
 from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 
 from cmip_explorer.domain.enums import DownloadMode, FailureCode, TaskStatus
 from cmip_explorer.domain.errors import FullDownloadConfirmationRequired
@@ -13,6 +13,13 @@ from cmip_explorer.domain.state_machine import assert_transition
 
 from .database import Database
 from .tables import ArtifactRow, ConfirmationRow, JobRow, RegionRow, TaskEventRow, TaskRow
+
+
+def _optional_int(value: object) -> int | None:
+    try:
+        return int(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None
 
 
 class TaskSummary:
@@ -25,6 +32,10 @@ class TaskSummary:
         progress_bytes: int,
         expected_size: int | None,
         target_path: str,
+        retry_attempt: int | None = None,
+        retry_maximum: int | None = None,
+        retry_at: str | None = None,
+        last_error: str | None = None,
     ) -> None:
         self.task_id = task_id
         self.file_key = file_key
@@ -33,6 +44,10 @@ class TaskSummary:
         self.progress_bytes = progress_bytes
         self.expected_size = expected_size
         self.target_path = target_path
+        self.retry_attempt = retry_attempt
+        self.retry_maximum = retry_maximum
+        self.retry_at = retry_at
+        self.last_error = last_error
 
 
 class TaskDetails(TaskSummary):
@@ -235,6 +250,7 @@ class TaskRepository:
             if job_id is not None:
                 statement = statement.where(TaskRow.job_id == str(job_id))
             rows = session.scalars(statement).all()
+            runtime = self._task_runtime_metadata(session, tuple(row.id for row in rows))
             return tuple(
                 TaskSummary(
                     task_id=row.id,
@@ -244,9 +260,51 @@ class TaskRepository:
                     progress_bytes=row.progress_bytes,
                     expected_size=row.expected_size,
                     target_path=row.target_path,
+                    retry_attempt=runtime.get(row.id, {}).get("retry_attempt"),
+                    retry_maximum=runtime.get(row.id, {}).get("retry_maximum"),
+                    retry_at=runtime.get(row.id, {}).get("retry_at"),
+                    last_error=runtime.get(row.id, {}).get("last_error"),
                 )
                 for row in rows
             )
+
+    @staticmethod
+    def _task_runtime_metadata(session, task_ids: tuple[str, ...]) -> dict[str, dict]:
+        if not task_ids:
+            return {}
+        latest_event_ids = (
+            select(func.max(TaskEventRow.id))
+            .where(
+                TaskEventRow.task_id.in_(task_ids),
+                TaskEventRow.event_type.in_(("state_changed", "connection_failed")),
+            )
+            .group_by(TaskEventRow.task_id, TaskEventRow.event_type)
+        )
+        events = session.scalars(
+            select(TaskEventRow)
+            .where(TaskEventRow.id.in_(latest_event_ids))
+            .order_by(TaskEventRow.id.desc())
+        ).all()
+        result: dict[str, dict] = {}
+        for event in events:
+            try:
+                payload = json.loads(event.payload_json)
+            except (TypeError, ValueError):
+                continue
+            metadata = result.setdefault(event.task_id, {})
+            if event.event_type == "connection_failed" and "last_error" not in metadata:
+                metadata["last_error"] = str(payload.get("error") or "")
+            if event.event_type != "state_changed":
+                continue
+            if payload.get("to") == TaskStatus.FAILED.value and "last_error" not in metadata:
+                metadata["last_error"] = str(payload.get("reason") or "")
+            if payload.get("to") != TaskStatus.RETRY_WAIT.value or "retry_at" in metadata:
+                continue
+            metadata["retry_attempt"] = _optional_int(payload.get("reconnect_attempt"))
+            metadata["retry_maximum"] = _optional_int(payload.get("retry_maximum"))
+            retry_at = payload.get("retry_at")
+            metadata["retry_at"] = str(retry_at) if retry_at else None
+        return result
 
     def delete_tasks(self, task_ids: tuple[UUID, ...]) -> int:
         if not task_ids:
@@ -306,6 +364,29 @@ class TaskRepository:
                     created_at=datetime.now(UTC),
                 )
             )
+
+    def download_candidates(self, task_id: UUID) -> tuple[str, ...]:
+        with self.database.session() as session:
+            task = session.get(TaskRow, str(task_id))
+            if task is None:
+                raise KeyError(task_id)
+            event = session.scalar(
+                select(TaskEventRow)
+                .where(
+                    TaskEventRow.task_id == str(task_id),
+                    TaskEventRow.event_type == "download_candidates",
+                )
+                .order_by(TaskEventRow.created_at.desc(), TaskEventRow.id.desc())
+                .limit(1)
+            )
+            if event is None:
+                return (task.source_url,)
+            try:
+                values = json.loads(event.payload_json).get("urls", ())
+            except (AttributeError, TypeError, ValueError):
+                values = ()
+            urls = tuple(str(value) for value in values if value)
+            return tuple(dict.fromkeys(urls)) or (task.source_url,)
 
     def save_region(self, region: Region) -> None:
         with self.database.session() as session:

@@ -7,6 +7,7 @@ import re
 import shutil
 from contextlib import suppress
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 from uuid import UUID, uuid4
@@ -69,12 +70,14 @@ class WorkflowService:
         allow_insecure_http: bool = False,
         storage_root: Path | None = None,
         auto_convert_to_tif: bool = True,
-        reconnect_delays: tuple[float, ...] = (2.0, 5.0, 10.0),
+        reconnect_delays: tuple[float, ...] = (2.0, 5.0, 10.0, 20.0, 30.0),
     ) -> None:
         self.paths = paths
         self.repository = repository
         self.subset_service = subset_service or StrictSubsetService()
-        self.downloader = downloader or HttpRangeDownloader()
+        # The workflow owns retries and mirror switching for climate files.
+        # Keep the transport retry-free here so the two layers cannot multiply.
+        self.downloader = downloader or HttpRangeDownloader(reconnect_delays=())
         self.allow_insecure_http = allow_insecure_http
         self.storage_root = storage_root or paths.outputs
         self.storage_root.mkdir(parents=True, exist_ok=True)
@@ -206,6 +209,9 @@ class WorkflowService:
             confirmation_id=confirmation.id,
         )
         self.repository.create_task(task)
+        self.repository.record_event(
+            task.id, "download_candidates", {"urls": list(candidates)}
+        )
         control = DownloadControl()
         self._download_controls[task.id] = control
         self.repository.transition(task.id, TaskStatus.RESOLVING)
@@ -297,6 +303,9 @@ class WorkflowService:
             checksum_type=checksum_type,
         )
         self.repository.create_task(task)
+        self.repository.record_event(
+            task.id, "download_candidates", {"urls": list(candidates)}
+        )
         return task.id, True
 
     async def download_file(self, job: JobContext, file: LogicalFile) -> Path:
@@ -375,17 +384,24 @@ class WorkflowService:
                         failure = {
                             "url": url,
                             "error_type": type(exc).__name__,
-                            "error": str(exc),
+                            "error": _error_text(exc),
                             "attempt": str(attempt),
                         }
                         self.repository.record_event(task_id, "connection_failed", failure)
                         retry = attempt <= len(self.reconnect_delays) and _is_retryable(exc)
                         if retry:
                             delay = self.reconnect_delays[attempt - 1]
+                            retry_at = datetime.now(UTC) + timedelta(seconds=delay)
                             self.repository.transition(
                                 task_id,
                                 TaskStatus.RETRY_WAIT,
-                                {"attempt": attempt, "retry_in_seconds": delay},
+                                {
+                                    "attempt": attempt,
+                                    "reconnect_attempt": attempt,
+                                    "retry_maximum": len(self.reconnect_delays),
+                                    "retry_in_seconds": delay,
+                                    "retry_at": retry_at.isoformat(),
+                                },
                             )
                             await self._wait_for_reconnect(task_id, control, delay)
                             self.repository.transition(task_id, TaskStatus.DOWNLOADING)
@@ -782,6 +798,7 @@ class WorkflowService:
         scenario = target.parent.name
         model = target.parent.parent.name
         variable = target.name.split("_", 1)[0]
+        candidates = self.repository.download_candidates(task_id)
         file = LogicalFile(
             logical_key=details.file_key,
             filename=target.name,
@@ -797,12 +814,13 @@ class WorkflowService:
                     replica=False,
                     checksum=details.checksum,
                     checksum_type=details.checksum_type,
-                    endpoints=(
+                    endpoints=tuple(
                         AccessEndpoint(
-                            url=details.source_url,
+                            url=url,
                             service="HTTPServer",
-                            secure=details.source_url.lower().startswith("https://"),
-                        ),
+                            secure=url.lower().startswith("https://"),
+                        )
+                        for url in candidates
                     ),
                 ),
             ),
@@ -992,6 +1010,17 @@ def _download_category(filename: str) -> str:
     if suffix in {".csv", ".json", ".txt"}:
         return "Tables"
     return "Other"
+
+
+def _error_text(error: Exception) -> str:
+    message = str(error).strip()
+    if message:
+        return message
+    if isinstance(error, httpx.ConnectError):
+        return "无法连接下载节点"
+    if isinstance(error, httpx.TimeoutException):
+        return "连接下载节点超时"
+    return type(error).__name__
 
 
 def _is_retryable(error: Exception) -> bool:

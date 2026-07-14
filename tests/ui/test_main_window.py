@@ -1,3 +1,4 @@
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from uuid import uuid4
@@ -25,6 +26,7 @@ from cmip_explorer.infrastructure.providers import PROVIDERS, ProviderVariable
 from cmip_explorer.ui import MainWindow
 from cmip_explorer.ui.pages.search import SearchPage as UISearchPage
 from cmip_explorer.ui.pages.search import _coverage
+from cmip_explorer.ui.pages.tasks import _friendly_download_error, _status_label
 
 
 def test_main_window_contains_complete_workbench_navigation(qtbot, tmp_path: Path) -> None:
@@ -67,6 +69,21 @@ def test_main_window_contains_complete_workbench_navigation(qtbot, tmp_path: Pat
     assert "2/8" in retry_status
     assert window.minimumWidth() >= 1180
     database.dispose()
+
+
+def test_download_retry_status_shows_attempt_and_countdown() -> None:
+    task = SimpleNamespace(
+        status="retry_wait",
+        retry_attempt=2,
+        retry_maximum=5,
+        retry_at=(datetime.now(UTC) + timedelta(seconds=8)).isoformat(),
+    )
+    label = _status_label(task)
+    assert "重连 2/5" in label
+    assert "秒后" in label
+    friendly_error = _friendly_download_error("502 Bad Gateway")
+    assert "HTTP 502" in friendly_error
+    assert "稍后重新连接" in friendly_error
 
 
 def test_log_page_defaults_to_user_operations_and_can_show_details(
@@ -177,6 +194,7 @@ def test_verified_update_runs_silently_and_restarts_application(
         )
     ]
     assert timers and timers[0][0] == 100
+    assert "正在静默安装" in settings_page.update_status.text()
     launcher_script = (tmp_path / "apply-update.ps1").read_text(encoding="utf-8")
     assert "Get-Process -Id $ParentPid" in launcher_script
     assert "'/SP-'" in launcher_script

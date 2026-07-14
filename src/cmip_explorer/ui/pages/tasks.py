@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import re
+from datetime import UTC, datetime
+from math import ceil
 from pathlib import Path
 from uuid import UUID
 
@@ -42,6 +45,7 @@ class TasksPage(QWidget):
         self.state = state
         self.pool = QThreadPool.globalInstance()
         self._workers: set[AsyncRunnable] = set()
+        self._recovering_tasks: set[UUID] = set()
         self._build_ui()
         self.timer = QTimer(self)
         self.timer.setInterval(1000)
@@ -232,10 +236,35 @@ class TasksPage(QWidget):
 
     def _cleanup_worker_finished(self, worker: AsyncRunnable) -> None:
         self._workers.discard(worker)
-        self.cleanup_button.setEnabled(True)
+        self.cleanup_button.setEnabled(not self._recovering_tasks)
 
     def _retry_task(self, task_id: UUID) -> None:
+        if task_id in self._recovering_tasks:
+            self.message.setText("这个任务已经在重新连接，请稍候")
+            return
+        try:
+            status = self.repository.status(task_id)
+        except KeyError:
+            self.message.setText("任务记录已被清理，请返回数据下载页重新添加")
+            self.refresh()
+            return
+        if status in {
+            TaskStatus.QUEUED,
+            TaskStatus.RESOLVING,
+            TaskStatus.PROBING,
+            TaskStatus.DOWNLOADING,
+            TaskStatus.RETRY_WAIT,
+            TaskStatus.VERIFYING,
+            TaskStatus.PROCESSING,
+        }:
+            self.message.setText("任务正在下载或自动重连，无需重复点击")
+            return
+        if status not in {TaskStatus.FAILED, TaskStatus.INTERRUPTED}:
+            self.message.setText("只有失败或意外中断的任务可以重新连接")
+            return
         self.message.setText("正在重新连接，将从已有进度继续")
+        self._recovering_tasks.add(task_id)
+        self.cleanup_button.setEnabled(False)
 
         async def recover():
             return await self.workflow.retry_task(task_id)
@@ -244,13 +273,24 @@ class TasksPage(QWidget):
         self._workers.add(worker)
         worker.signals.result.connect(lambda path: self.message.setText(f"任务完成: {path}"))
         worker.signals.error.connect(
-            lambda _trace, error: self.message.setText(f"重新连接失败: {error}")
+            lambda _trace, error: self._retry_failed(task_id, error)
         )
-        worker.signals.finished.connect(lambda: self._recovery_finished(worker))
+        worker.signals.finished.connect(
+            lambda: self._recovery_finished(worker, task_id)
+        )
         self.pool.start(worker)
 
-    def _recovery_finished(self, worker: AsyncRunnable) -> None:
+    def _retry_failed(self, task_id: UUID, error: object) -> None:
+        if isinstance(error, KeyError):
+            self.message.setText("任务记录已被清理，请返回数据下载页重新添加")
+            return
+        self.message.setText(f"重新连接失败: {_friendly_download_error(str(error))}")
+
+    def _recovery_finished(self, worker: AsyncRunnable, task_id: UUID) -> None:
         self._workers.discard(worker)
+        self._recovering_tasks.discard(task_id)
+        if not self._recovering_tasks:
+            self.cleanup_button.setEnabled(True)
         self.refresh()
 
     def refresh(self) -> None:
@@ -263,7 +303,7 @@ class TasksPage(QWidget):
         for row, task in enumerate(tasks):
             target = Path(task.target_path)
             values = (
-                _status_label(task.status),
+                _status_label(task),
                 "",
                 target.name,
                 _human_bytes(task.expected_size),
@@ -275,6 +315,7 @@ class TasksPage(QWidget):
                 if column == 0:
                     item.setData(Qt.ItemDataRole.UserRole, task.task_id)
                     item.setData(Qt.ItemDataRole.UserRole + 1, task.target_path)
+                    item.setData(Qt.ItemDataRole.UserRole + 2, task.last_error or "")
                     item.setForeground(QColor(_status_color(task.status)))
                     font = QFont(item.font())
                     font.setWeight(QFont.Weight.DemiBold)
@@ -311,7 +352,14 @@ class TasksPage(QWidget):
         if path is None:
             self.details.setText("选中任务后在这里显示完整文件名和保存位置")
         else:
-            self.details.setText(f"完整文件名：{path.name}\n保存位置：{path.parent}")
+            row = self.table.currentRow()
+            error = self.table.item(row, 0).data(Qt.ItemDataRole.UserRole + 2)
+            error_text = (
+                f"\n最近错误：{_friendly_download_error(str(error))}" if error else ""
+            )
+            self.details.setText(
+                f"完整文件名：{path.name}\n保存位置：{path.parent}{error_text}"
+            )
 
     def _open_in_explorer(self) -> None:
         path = self._selected_path()
@@ -369,7 +417,15 @@ def _progress_bar(task) -> QProgressBar:
     return bar
 
 
-def _status_label(value: str) -> str:
+def _status_label(task) -> str:
+    value = task if isinstance(task, str) else task.status
+    if value == TaskStatus.RETRY_WAIT.value and not isinstance(task, str):
+        attempt = task.retry_attempt
+        maximum = task.retry_maximum
+        remaining = _retry_seconds_remaining(task.retry_at)
+        count = f" {attempt}/{maximum}" if attempt and maximum else ""
+        wait = f" · {remaining} 秒后继续" if remaining is not None else ""
+        return f"重连{count}{wait}"
     return {
         "queued": "等待中",
         "resolving": "解析地址",
@@ -384,6 +440,37 @@ def _status_label(value: str) -> str:
         "failed": "失败",
         "canceled": "已取消",
     }.get(value, value)
+
+
+def _retry_seconds_remaining(retry_at: str | None) -> int | None:
+    if not retry_at:
+        return None
+    try:
+        value = datetime.fromisoformat(retry_at)
+    except ValueError:
+        return None
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=UTC)
+    return max(0, ceil((value - datetime.now(UTC)).total_seconds()))
+
+
+def _friendly_download_error(message: str) -> str:
+    text = message.strip()
+    if not text:
+        return "无法连接下载节点"
+    status = re.search(r"(?:HTTP[^0-9]*)?\b(4\d\d|5\d\d)\b", text)
+    if status:
+        code = status.group(1)
+        if code in {"500", "502", "503", "504"}:
+            return f"数据源节点暂时不可用（HTTP {code}），可稍后重新连接"
+        return f"下载节点返回 HTTP {code}"
+    lowered = text.casefold()
+    if "connect" in lowered or "连接下载节点" in text:
+        return "无法连接下载节点，请检查网络或稍后重试"
+    if "timed out" in lowered or "timeout" in lowered or "超时" in text:
+        return "连接下载节点超时，请稍后重试"
+    first_line = text.splitlines()[0]
+    return first_line if len(first_line) <= 180 else f"{first_line[:177]}..."
 
 
 def _status_color(value: str) -> str:
