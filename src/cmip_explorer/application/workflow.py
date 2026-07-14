@@ -86,7 +86,7 @@ class WorkflowService:
         self.storage_root = storage_root or paths.outputs
         self.storage_root.mkdir(parents=True, exist_ok=True)
         self.auto_convert_to_tif = auto_convert_to_tif
-        self.download_concurrency = max(1, min(8, int(download_concurrency)))
+        self.download_concurrency = max(1, min(20, int(download_concurrency)))
         self.reconnect_delays = reconnect_delays
         self.shutdown_requested = False
         self._download_controls: dict[UUID, DownloadControl] = {}

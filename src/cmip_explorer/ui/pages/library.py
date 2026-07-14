@@ -182,6 +182,12 @@ class LibraryPage(QWidget):
         self.refresh()
 
     def refresh(self) -> None:
+        current_item = self.table.item(self.table.currentRow(), 0)
+        selected_path = (
+            Path(str(current_item.data(Qt.ItemDataRole.UserRole)))
+            if current_item is not None
+            else None
+        )
         checked_paths = {
             Path(str(item.data(Qt.ItemDataRole.UserRole)))
             for row in range(self.table.rowCount())
@@ -210,7 +216,9 @@ class LibraryPage(QWidget):
             )
             check_item = QTableWidgetItem()
             check_item.setFlags(
-                Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsUserCheckable
+                Qt.ItemFlag.ItemIsEnabled
+                | Qt.ItemFlag.ItemIsSelectable
+                | Qt.ItemFlag.ItemIsUserCheckable
             )
             check_item.setCheckState(
                 Qt.CheckState.Checked
@@ -237,11 +245,18 @@ class LibraryPage(QWidget):
             if self.groups
             else "暂无数据"
         )
-        if self.groups and self.table.currentRow() < 0:
-            self.table.selectRow(0)
-        elif not self.groups:
-            self.details.setText("当前存储目录中没有可识别的数据组。")
+        if self.groups:
+            selected_row = next(
+                (
+                    row
+                    for row, group in enumerate(self.groups)
+                    if group.path == selected_path
+                ),
+                0,
+            )
+            self.table.selectRow(selected_row)
         self._checked_changed()
+        self._show_details()
 
     def _selected_group(self) -> LocalDataGroup | None:
         row = self.table.currentRow()
@@ -293,7 +308,9 @@ class LibraryPage(QWidget):
         }
         return tuple(group for group in self.groups if group.path in selected_paths)
 
-    def _checked_changed(self) -> None:
+    def _checked_changed(self, item: QTableWidgetItem | None = None) -> None:
+        if item is not None and item.column() == 0:
+            self.table.selectRow(item.row())
         count = len(self._checked_groups())
         self.delete_button.setEnabled(count > 0)
         self.delete_button.setText(f"删除所选 ({count})" if count else "删除所选")

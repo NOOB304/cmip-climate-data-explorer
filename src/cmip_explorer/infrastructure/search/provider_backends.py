@@ -45,7 +45,7 @@ class HttpProviderBackend:
         self.client = client or httpx.AsyncClient(
             timeout=httpx.Timeout(35, connect=12),
             follow_redirects=True,
-            headers={"User-Agent": "CMIP-Climate-Explorer/0.5.5"},
+            headers={"User-Agent": "CMIP-Climate-Explorer/0.5.6"},
         )
 
     async def detect_capabilities(self) -> BackendCapabilities:

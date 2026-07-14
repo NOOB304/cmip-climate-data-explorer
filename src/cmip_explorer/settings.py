@@ -18,7 +18,7 @@ def preferred_storage_directory() -> Path:
 @dataclass(frozen=True, slots=True)
 class AppSettings:
     download_concurrency: int = 2
-    cache_quota_gb: int = 20
+    cache_quota_gb: float = 20.0
     allow_insecure_http: bool = False
     update_channel: str = "stable"
     storage_directory: str = ""
@@ -37,10 +37,16 @@ class AppSettings:
             return cls(
                 download_concurrency=max(
                     1,
-                    min(8, int(payload.get("download_concurrency", defaults.download_concurrency))),
+                    min(
+                        20, int(payload.get("download_concurrency", defaults.download_concurrency))
+                    ),
                 ),
                 cache_quota_gb=max(
-                    1, min(1000, int(payload.get("cache_quota_gb", defaults.cache_quota_gb)))
+                    0.1,
+                    min(
+                        2048.0,
+                        float(payload.get("cache_quota_gb", defaults.cache_quota_gb)),
+                    ),
                 ),
                 allow_insecure_http=bool(
                     payload.get("allow_insecure_http", defaults.allow_insecure_http)

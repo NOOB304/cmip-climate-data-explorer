@@ -41,7 +41,15 @@ def test_local_data_is_grouped_and_checked_groups_can_be_deleted(
         for row in range(page.table.rowCount())
         if Path(page.table.item(row, 0).data(Qt.ItemDataRole.UserRole)) == processed
     )
+    downloaded_row = next(
+        row
+        for row in range(page.table.rowCount())
+        if Path(page.table.item(row, 0).data(Qt.ItemDataRole.UserRole)) == downloaded
+    )
+    page.table.selectRow(downloaded_row)
+    assert str(downloaded) in page.details.text()
     page.table.item(processed_row, 0).setCheckState(Qt.CheckState.Checked)
+    assert str(processed) in page.details.text()
     assert page.delete_button.isEnabled()
     assert page.delete_button.text() == "删除所选 (1)"
     monkeypatch.setattr(
@@ -56,3 +64,6 @@ def test_local_data_is_grouped_and_checked_groups_can_be_deleted(
     assert not processed.exists()
     assert downloaded.exists()
     assert page.table.rowCount() == 1
+    assert str(downloaded) in page.details.text()
+    assert "1 个 NC" in page.details.text()
+    assert "TIF" not in page.details.text()

@@ -4,7 +4,7 @@ from types import SimpleNamespace
 from uuid import uuid4
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QMessageBox, QProgressBar
+from PySide6.QtWidgets import QAbstractSpinBox, QMessageBox, QProgressBar
 
 import cmip_explorer.ui.pages.settings as settings_module
 from cmip_explorer import __version__
@@ -58,6 +58,9 @@ def test_main_window_contains_complete_workbench_navigation(qtbot, tmp_path: Pat
     settings_page = window.stack.widget(5)
     assert settings_page.update_button.text() == "检查更新"
     assert settings_page.version_label.text() == f"当前版本 {__version__}"
+    assert window.sidebar_version.text() == (
+        f"v{__version__}  |  Developed by Wei Heng"
+    )
     settings_page._show_update_progress(50 * 1024**2, 100 * 1024**2)
     assert settings_page.update_progress.maximum() == 1000
     assert settings_page.update_progress.value() == 500
@@ -68,6 +71,49 @@ def test_main_window_contains_complete_workbench_navigation(qtbot, tmp_path: Pat
     assert "5 秒后自动重连" in retry_status
     assert "2/8" in retry_status
     assert window.minimumWidth() >= 1180
+    database.dispose()
+
+
+def test_settings_numeric_fields_hide_buttons_and_clamp_values(
+    qtbot, tmp_path: Path, monkeypatch
+) -> None:
+    paths = AppPaths(
+        data=tmp_path / "data",
+        cache=tmp_path / "cache",
+        logs=tmp_path / "logs",
+        outputs=tmp_path / "outputs",
+        database=tmp_path / "data" / "app.db",
+        catalog=tmp_path / "data" / "catalog.db",
+    )
+    paths.ensure()
+    install_packaged_catalog(paths.catalog)
+    database = Database(paths.database)
+    database.initialize()
+    repository = TaskRepository(database)
+    window = MainWindow(paths, repository, WorkflowService(paths, repository))
+    qtbot.addWidget(window)
+    settings_page = window.stack.widget(5)
+    warnings: list[str] = []
+    monkeypatch.setattr(
+        QMessageBox,
+        "warning",
+        lambda _parent, _title, message: warnings.append(message),
+    )
+
+    assert settings_page.download_concurrency.buttonSymbols() == (
+        QAbstractSpinBox.ButtonSymbols.NoButtons
+    )
+    assert settings_page.cache_quota.buttonSymbols() == (
+        QAbstractSpinBox.ButtonSymbols.NoButtons
+    )
+    settings_page.download_concurrency.setValue(99)
+    settings_page._validate_download_concurrency()
+    settings_page.cache_quota.setValue(9999)
+    settings_page._validate_cache_quota()
+
+    assert settings_page.download_concurrency.value() == 20
+    assert settings_page.cache_quota.value() == 2048.0
+    assert len(warnings) == 2
     database.dispose()
 
 

@@ -5,9 +5,11 @@ from pathlib import Path
 
 from PySide6.QtCore import QProcess, Qt, QThreadPool, QTimer, Signal
 from PySide6.QtWidgets import (
+    QAbstractSpinBox,
     QApplication,
     QCheckBox,
     QComboBox,
+    QDoubleSpinBox,
     QFileDialog,
     QFormLayout,
     QFrame,
@@ -98,12 +100,18 @@ class SettingsPage(QWidget):
             "控制同时下载数量、缓存占用和旧节点兼容方式。",
         )
         self.download_concurrency = QSpinBox()
-        self.download_concurrency.setRange(1, 8)
+        self.download_concurrency.setRange(-1_000_000, 1_000_000)
+        self.download_concurrency.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
         self.download_concurrency.setValue(self.settings.download_concurrency)
-        self.cache_quota = QSpinBox()
-        self.cache_quota.setRange(1, 1000)
-        self.cache_quota.setSuffix(" GiB")
+        self.download_concurrency.editingFinished.connect(self._validate_download_concurrency)
+        self.cache_quota = QDoubleSpinBox()
+        self.cache_quota.setRange(-1_000_000.0, 1_000_000.0)
+        self.cache_quota.setDecimals(1)
+        self.cache_quota.setSingleStep(0.1)
+        self.cache_quota.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
+        self.cache_quota.setSuffix(" GB")
         self.cache_quota.setValue(self.settings.cache_quota_gb)
+        self.cache_quota.editingFinished.connect(self._validate_cache_quota)
         self.insecure_http = QCheckBox("允许连接旧式 HTTP 数据节点")
         self.insecure_http.setObjectName("Switch")
         self.insecure_http.setChecked(self.settings.allow_insecure_http)
@@ -209,7 +217,35 @@ class SettingsPage(QWidget):
         if selected:
             self.storage_directory.setText(selected)
 
+    def _validate_download_concurrency(self) -> None:
+        self.download_concurrency.interpretText()
+        value = self.download_concurrency.value()
+        corrected = min(20, max(1, value))
+        if corrected == value:
+            return
+        self.download_concurrency.setValue(corrected)
+        QMessageBox.warning(
+            self,
+            "输入超出范围",
+            f"同时下载任务应在 1 至 20 之间，已自动设置为 {corrected}。",
+        )
+
+    def _validate_cache_quota(self) -> None:
+        self.cache_quota.interpretText()
+        value = self.cache_quota.value()
+        corrected = min(2048.0, max(0.1, value))
+        if corrected == value:
+            return
+        self.cache_quota.setValue(corrected)
+        QMessageBox.warning(
+            self,
+            "输入超出范围",
+            f"缓存空间上限应在 0.1 至 2048 GB 之间，已自动设置为 {corrected:g} GB。",
+        )
+
     def _save(self) -> None:
+        self._validate_download_concurrency()
+        self._validate_cache_quota()
         self.settings = AppSettings(
             download_concurrency=self.download_concurrency.value(),
             cache_quota_gb=self.cache_quota.value(),
