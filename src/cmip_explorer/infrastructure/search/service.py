@@ -6,7 +6,7 @@ import httpx
 
 from cmip_explorer.domain.models import FacetConstraint, LogicalFile, SearchPage, SearchRequest
 
-from .normalizer import merge_logical_files
+from .normalizer import group_time_series, merge_logical_files
 from .registry import BackendRegistry
 
 
@@ -59,16 +59,23 @@ class MultiBackendSearchService:
             result = await self._search_with_retry(backend, request, cursor)
             first_result = first_result or result
             collected.extend(result.files)
-            merged = merge_logical_files(collected)
+            physical_files = merge_logical_files(collected)
+            visible_files = (
+                group_time_series(physical_files)
+                if request.provider_id == "esgf"
+                else physical_files
+            )
             next_cursor = result.next_cursors.get(backend.definition.id)
             scanned += 1
-            if merged and (len(merged) >= request.page_size or next_cursor is None):
-                return _merge_scanned_pages(first_result, result, merged), skipped
+            if visible_files and (
+                len(visible_files) >= request.page_size or next_cursor is None
+            ):
+                return _merge_scanned_pages(first_result, result, visible_files), skipped
             if next_cursor is None:
-                return _merge_scanned_pages(first_result, result, merged), skipped
+                return _merge_scanned_pages(first_result, result, visible_files), skipped
             if scanned >= self.max_page_scans:
-                if merged:
-                    partial = _merge_scanned_pages(first_result, result, merged)
+                if visible_files:
+                    partial = _merge_scanned_pages(first_result, result, visible_files)
                     warning = (
                         f"{backend.definition.name}: 当前页已扫描 {scanned} 个原始分页 "
                         "其余匹配项可继续翻页查看"
@@ -82,7 +89,7 @@ class MultiBackendSearchService:
                 raise RuntimeError("数据源返回了重复分页位置")
             if not result.files:
                 skipped += 1
-            if skipped >= self.max_empty_page_skips and not merged:
+            if skipped >= self.max_empty_page_skips and not visible_files:
                 raise RuntimeError("连续分页均无匹配记录 请缩小查询条件后重试")
             seen_cursors.add(marker)
             cursor = next_cursor

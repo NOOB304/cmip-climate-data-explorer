@@ -290,6 +290,66 @@ async def test_checksum_verified_download_resumes_when_cdn_etag_changes(
     assert target.read_bytes() == payload
 
 
+async def test_checksum_verified_partial_resumes_from_another_mirror(
+    tmp_path: Path,
+) -> None:
+    payload = b"same-verified-file-on-two-mirrors"
+    target = tmp_path / "mirror.nc"
+    part = target.with_suffix(".nc.part")
+    sidecar = target.with_suffix(".nc.part.json")
+    part.write_bytes(payload[:8])
+    sidecar.write_text(
+        json.dumps(
+            {
+                "source_url": "https://slow.example.test/data/mirror.nc",
+                "etag": "slow-node",
+                "last_modified": None,
+                "expected_size": len(payload),
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "HEAD":
+            return httpx.Response(
+                200,
+                headers={"Content-Length": str(len(payload)), "ETag": "fast-node"},
+            )
+        assert request.url.host == "fast.example.test"
+        assert request.headers["Range"] == "bytes=8-"
+        return httpx.Response(206, content=payload[8:])
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        result = await HttpRangeDownloader(client=client).download(
+            "https://fast.example.test/data/mirror.nc",
+            target,
+            expected_size=len(payload),
+            expected_checksum=hashlib.sha256(payload).hexdigest(),
+        )
+
+    assert result.resumed_from == 8
+    assert target.read_bytes() == payload
+
+
+async def test_probe_speed_distinguishes_fast_and_slow_candidates() -> None:
+    payload = b"x" * (16 * 1024)
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.host == "slow.example.test":
+            await asyncio.sleep(0.04)
+        return httpx.Response(206, content=payload)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        downloader = HttpRangeDownloader(client=client)
+        fast, slow = await asyncio.gather(
+            downloader.probe_speed("https://fast.example.test/data.nc"),
+            downloader.probe_speed("https://slow.example.test/data.nc"),
+        )
+
+    assert fast > slow
+
+
 async def test_resume_keeps_partial_when_only_url_scheme_changes(tmp_path: Path) -> None:
     payload = b"scheme-compatible-resume"
     target = tmp_path / "scheme.nc"

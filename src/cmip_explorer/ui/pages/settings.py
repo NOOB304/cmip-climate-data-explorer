@@ -223,6 +223,7 @@ class SettingsPage(QWidget):
         self.workflow.allow_insecure_http = self.settings.allow_insecure_http
         self.workflow.storage_root = self.settings.storage_path
         self.workflow.auto_convert_to_tif = self.settings.auto_convert_to_tif
+        self.workflow.download_concurrency = self.settings.download_concurrency
         self.saved.emit("设置已保存")
         QMessageBox.information(self, "设置", "设置已保存。")
 

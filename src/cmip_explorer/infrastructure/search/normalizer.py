@@ -147,6 +147,116 @@ def merge_logical_files(files: Iterable[LogicalFile]) -> tuple[LogicalFile, ...]
     return tuple(sorted(merged.values(), key=lambda item: item.logical_key))
 
 
+def group_time_series(files: Iterable[LogicalFile]) -> tuple[LogicalFile, ...]:
+    """Collapse ESGF time-slice files into downloadable dataset series."""
+    groups: dict[tuple[str, ...], list[LogicalFile]] = {}
+    singles: list[LogicalFile] = []
+    for item in files:
+        if not item.temporal.start or not item.temporal.end:
+            singles.append(item)
+            continue
+        groups.setdefault(_series_group_key(item), []).append(item)
+
+    result = list(singles)
+    for key, members in groups.items():
+        unique = {member.logical_key: member for member in members}
+        ordered = tuple(
+            sorted(
+                unique.values(),
+                key=lambda member: (
+                    member.temporal.start or "",
+                    member.temporal.end or "",
+                    member.filename,
+                ),
+            )
+        )
+        if len(ordered) == 1:
+            result.append(ordered[0])
+        else:
+            result.append(_series_file(key, ordered))
+    return tuple(
+        sorted(
+            result,
+            key=lambda item: (
+                item.variable_id or "",
+                item.source_id or "",
+                item.experiment_id or "",
+                item.member_id or "",
+                item.table_id or "",
+                item.grid_label or "",
+                item.temporal.start or "",
+                item.logical_key,
+            ),
+        )
+    )
+
+
+def _series_group_key(file: LogicalFile) -> tuple[str, ...]:
+    return tuple(
+        value or ""
+        for value in (
+            file.provider_id,
+            file.project,
+            file.activity_id,
+            file.institution_id,
+            file.source_id,
+            file.experiment_id,
+            file.member_id,
+            file.table_id,
+            file.variable_id,
+            file.grid_label,
+            file.nominal_resolution,
+            file.frequency,
+            file.version,
+        )
+    )
+
+
+def _series_file(key: tuple[str, ...], members: tuple[LogicalFile, ...]) -> LogicalFile:
+    first = members[0]
+    starts = [member.temporal.start for member in members if member.temporal.start]
+    ends = [member.temporal.end for member in members if member.temporal.end]
+    start = min(starts) if starts else None
+    end = max(ends) if ends else None
+    size = (
+        sum(member.size_bytes for member in members if member.size_bytes is not None)
+        if all(member.size_bytes is not None for member in members)
+        else None
+    )
+    start_label = start[:4] if start else "unknown"
+    end_label = end[:4] if end else "unknown"
+    name_parts = (
+        first.variable_id or "data",
+        first.table_id or first.frequency or "series",
+        first.source_id or "model",
+        first.experiment_id or "scenario",
+        first.member_id or "member",
+        first.grid_label or "grid",
+        f"{start_label}-{end_label}",
+        f"{len(members)}files",
+    )
+    provenance = dict(first.raw_provenance)
+    provenance.update(
+        {
+            "access_note": f"整套下载 ({len(members)} 个 NC 文件)",
+            "series_file_count": len(members),
+            "series_key": "|".join(key),
+        }
+    )
+    return first.model_copy(
+        update={
+            "logical_key": f"series:{'|'.join(key)}",
+            "filename": "_".join(name_parts) + ".series",
+            "dataset_id": f"series:{'|'.join(key)}",
+            "size_bytes": size,
+            "temporal": TemporalCoverage(start=start, end=end, source="filename"),
+            "replicas": (),
+            "series_members": members,
+            "raw_provenance": provenance,
+        }
+    )
+
+
 def _deduplicate_replicas(replicas: Iterable[Replica]) -> tuple[Replica, ...]:
     result: dict[tuple[str, str, str | None], Replica] = {}
     for replica in replicas:

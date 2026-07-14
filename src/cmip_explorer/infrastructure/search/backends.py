@@ -27,7 +27,7 @@ class LegacySolrBackend:
         self.client = client or httpx.AsyncClient(
             timeout=httpx.Timeout(25.0, connect=10.0),
             follow_redirects=True,
-            headers={"User-Agent": "CMIP-Climate-Explorer/0.5.4"},
+            headers={"User-Agent": "CMIP-Climate-Explorer/0.5.5"},
         )
 
     async def detect_capabilities(self) -> BackendCapabilities:
@@ -64,10 +64,13 @@ class LegacySolrBackend:
 
     async def search(self, request: SearchRequest, cursor: str | int | None = None) -> SearchPage:
         offset = int(cursor or 0)
+        # ESGF returns physical files and replicas. Fetch a larger raw batch so the
+        # result layer can assemble long time series without several round trips.
+        raw_page_size = max(request.page_size, 500)
         params = self._params(request)
         params.update(
             {
-                "limit": request.page_size,
+                "limit": raw_page_size,
                 "offset": offset,
                 "facets": "source_id,experiment_id,table_id,frequency,grid_label",
             }

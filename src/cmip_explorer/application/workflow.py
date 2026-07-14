@@ -70,6 +70,7 @@ class WorkflowService:
         allow_insecure_http: bool = False,
         storage_root: Path | None = None,
         auto_convert_to_tif: bool = True,
+        download_concurrency: int = 2,
         reconnect_delays: tuple[float, ...] = (2.0, 5.0, 10.0, 20.0, 30.0),
     ) -> None:
         self.paths = paths
@@ -85,9 +86,11 @@ class WorkflowService:
         self.storage_root = storage_root or paths.outputs
         self.storage_root.mkdir(parents=True, exist_ok=True)
         self.auto_convert_to_tif = auto_convert_to_tif
+        self.download_concurrency = max(1, min(8, int(download_concurrency)))
         self.reconnect_delays = reconnect_delays
         self.shutdown_requested = False
         self._download_controls: dict[UUID, DownloadControl] = {}
+        self._mirror_speed_cache: dict[str, float] = {}
 
     def create_job(self, name: str, plan: dict) -> JobContext:
         serialized = json.dumps(plan, ensure_ascii=False, sort_keys=True).encode("utf-8")
@@ -341,6 +344,7 @@ class WorkflowService:
         candidates = _http_download_candidates(file, self.allow_insecure_http)
         if details.source_url not in candidates:
             candidates = (details.source_url, *candidates)
+        candidates = await self._rank_download_candidates(task_id, candidates)
         control = DownloadControl()
         self._download_controls[task_id] = control
         failures: list[dict[str, str]] = []
@@ -435,6 +439,54 @@ class WorkflowService:
         finally:
             self._download_controls.pop(task_id, None)
         raise RuntimeError("unreachable mirror selection state")
+
+    async def _rank_download_candidates(
+        self, task_id: UUID, candidates: tuple[str, ...]
+    ) -> tuple[str, ...]:
+        origins: dict[str, str] = {}
+        for url in candidates:
+            origins.setdefault(_download_origin(url), url)
+        if len(origins) < 2:
+            return candidates
+
+        missing = {
+            origin: url
+            for origin, url in origins.items()
+            if origin not in self._mirror_speed_cache
+        }
+        if missing:
+            scores = await asyncio.gather(
+                *(self.downloader.probe_speed(url) for url in missing.values())
+            )
+            self._mirror_speed_cache.update(zip(missing, scores, strict=True))
+
+        ranking = sorted(
+            enumerate(candidates),
+            key=lambda item: (
+                self._mirror_speed_cache.get(_download_origin(item[1]), 0.0),
+                -item[0],
+            ),
+            reverse=True,
+        )
+        ranked = tuple(url for _index, url in ranking)
+        self.repository.record_event(
+            task_id,
+            "mirror_speed_test",
+            {
+                "ranking": [
+                    {
+                        "origin": _download_origin(url),
+                        "kib_per_second": round(
+                            self._mirror_speed_cache.get(_download_origin(url), 0.0)
+                            / 1024,
+                            1,
+                        ),
+                    }
+                    for url in ranked
+                ]
+            },
+        )
+        return ranked
 
     def _finalize_download(
         self,
@@ -989,6 +1041,11 @@ def _http_download_candidates(file: LogicalFile, allow_insecure_http: bool) -> t
                 if allow_insecure_http or checksum_available:
                     insecure_http.append(endpoint.url)
     return tuple(dict.fromkeys((*native_https, *upgraded_https, *insecure_http)))
+
+
+def _download_origin(url: str) -> str:
+    parts = urlsplit(url)
+    return f"{parts.scheme.casefold()}://{parts.netloc.casefold()}"
 
 
 def _sha256(path: Path) -> str:

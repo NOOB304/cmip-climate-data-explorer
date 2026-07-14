@@ -241,6 +241,46 @@ def test_default_workflow_uses_one_visible_retry_layer(tmp_path: Path) -> None:
     try:
         assert workflow.downloader.reconnect_delays == ()
         assert workflow.reconnect_delays == (2.0, 5.0, 10.0, 20.0, 30.0)
+        assert workflow.download_concurrency == 2
+    finally:
+        database.dispose()
+
+
+async def test_workflow_ranks_faster_mirror_first_and_caches_probe(
+    tmp_path: Path,
+) -> None:
+    class ProbeDownloader:
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+
+        async def probe_speed(self, url: str) -> float:
+            self.calls.append(url)
+            return 10_000.0 if "fast" in url else 100.0
+
+    paths = _test_paths(tmp_path)
+    paths.ensure()
+    database = Database(paths.database)
+    database.initialize()
+    repository = TaskRepository(database)
+    downloader = ProbeDownloader()
+    workflow = WorkflowService(
+        paths,
+        repository,
+        downloader=downloader,  # type: ignore[arg-type]
+        storage_root=tmp_path / "climate-data",
+    )
+    file = _test_file(100)
+    job = workflow.create_job("mirror ranking", {"file": file.logical_key})
+    task_id, _created = workflow.enqueue_download(job, file)
+    candidates = (
+        "https://slow.example.test/data.nc",
+        "https://fast.example.test/data.nc",
+    )
+    try:
+        first = await workflow._rank_download_candidates(task_id, candidates)
+        second = await workflow._rank_download_candidates(task_id, candidates)
+        assert first == second == (candidates[1], candidates[0])
+        assert len(downloader.calls) == 2
     finally:
         database.dispose()
 

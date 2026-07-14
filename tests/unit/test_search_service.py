@@ -3,7 +3,15 @@ from types import SimpleNamespace
 import httpx
 import pytest
 
-from cmip_explorer.domain.models import LogicalFile, SearchPage, SearchRequest
+from cmip_explorer.domain.enums import BackendKind
+from cmip_explorer.domain.models import (
+    Backend,
+    LogicalFile,
+    SearchPage,
+    SearchRequest,
+    TemporalCoverage,
+)
+from cmip_explorer.infrastructure.search.backends import LegacySolrBackend
 from cmip_explorer.infrastructure.search.service import MultiBackendSearchService
 
 
@@ -86,6 +94,31 @@ async def test_transient_search_error_is_retried_once() -> None:
     assert backend.calls == 2
 
 
+async def test_esgf_backend_fetches_large_raw_batches_for_series_grouping() -> None:
+    limits: list[str | None] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        limits.append(request.url.params.get("limit"))
+        return httpx.Response(
+            200,
+            json={"response": {"docs": [], "numFound": 0}},
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        backend = LegacySolrBackend(
+            Backend(
+                id="test",
+                name="test",
+                kind=BackendKind.LEGACY_SOLR,
+                base_url="https://example.test/search",
+            ),
+            client,
+        )
+        await backend.search(SearchRequest(page_size=100))
+
+    assert limits == ["500"]
+
+
 async def test_client_error_is_not_retried() -> None:
     request = httpx.Request("GET", "https://example.test/search")
     response = httpx.Response(400, request=request)
@@ -154,6 +187,47 @@ async def test_sparse_visible_pages_are_accumulated_before_display() -> None:
 
     assert result.files == (first, second)
     assert result.next_cursors == {"primary": 200}
+    assert backend.cursors == [None, 100]
+
+
+async def test_esgf_time_slices_are_accumulated_into_one_visible_series() -> None:
+    def time_slice(key: str, start: str, end: str) -> LogicalFile:
+        return LogicalFile(
+            logical_key=key,
+            filename=f"mrsos_day_model_ssp119_r1i1p1f1_gn_{start}-{end}.nc",
+            source_id="model",
+            experiment_id="ssp119",
+            member_id="r1i1p1f1",
+            table_id="day",
+            variable_id="mrsos",
+            grid_label="gn",
+            frequency="day",
+            version="v1",
+            temporal=TemporalCoverage(start=start, end=end, source="filename"),
+        )
+
+    backend = PagedBackendStub(
+        "primary",
+        {
+            None: SearchPage(
+                files=(time_slice("first", "20150101", "20341231"),),
+                next_cursors={"primary": 100},
+            ),
+            100: SearchPage(
+                files=(time_slice("second", "20350101", "20541231"),),
+                next_cursors={"primary": None},
+            ),
+        },
+    )
+
+    result = await MultiBackendSearchService(RegistryStub(backend)).search(
+        SearchRequest(provider_id="esgf", page_size=2)
+    )
+
+    assert len(result.files) == 1
+    assert result.files[0].file_count == 2
+    assert result.files[0].temporal.start == "20150101"
+    assert result.files[0].temporal.end == "20541231"
     assert backend.cursors == [None, 100]
 
 

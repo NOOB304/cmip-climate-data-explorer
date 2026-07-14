@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import csv
 import re
 from datetime import UTC, datetime
@@ -928,20 +929,30 @@ class SearchPage(QWidget):
         self.state.message.emit(message)
 
         async def download_all() -> tuple[list[Path], list[tuple[str, str]]]:
-            paths: list[Path] = []
-            failures: list[tuple[str, str]] = []
-            for task_id, file in queued:
-                if self.workflow.shutdown_requested:
-                    break
-                if self.workflow.repository.status(task_id) is TaskStatus.CANCELED:
-                    continue
-                try:
-                    paths.append(await self.workflow.run_download_task(task_id, file))
-                except DownloadCancelled:
-                    continue
-                except Exception as exc:
-                    failures.append((file.filename, str(exc)))
-            return paths, failures
+            semaphore = asyncio.Semaphore(self.workflow.download_concurrency)
+
+            async def download_one(
+                task_id: UUID, file: LogicalFile
+            ) -> tuple[Path | None, tuple[str, str] | None]:
+                async with semaphore:
+                    if self.workflow.shutdown_requested:
+                        return None, None
+                    if self.workflow.repository.status(task_id) is TaskStatus.CANCELED:
+                        return None, None
+                    try:
+                        return await self.workflow.run_download_task(task_id, file), None
+                    except DownloadCancelled:
+                        return None, None
+                    except Exception as exc:
+                        return None, (file.filename, str(exc))
+
+            results = await asyncio.gather(
+                *(download_one(task_id, file) for task_id, file in queued)
+            )
+            return (
+                [path for path, _failure in results if path is not None],
+                [failure for _path, failure in results if failure is not None],
+            )
 
         if not queued:
             return

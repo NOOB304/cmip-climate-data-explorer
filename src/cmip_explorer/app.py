@@ -75,6 +75,7 @@ def main() -> int:
         allow_insecure_http=settings.allow_insecure_http,
         storage_root=settings.storage_path,
         auto_convert_to_tif=settings.auto_convert_to_tif,
+        download_concurrency=settings.download_concurrency,
     )
     window = MainWindow(paths, repository, workflow)
     if interrupted:

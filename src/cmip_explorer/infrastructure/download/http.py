@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 import re
+import time
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -108,6 +109,51 @@ class HttpRangeDownloader:
                 control=control,
                 reconnect=reconnect,
             )
+
+    async def probe_speed(
+        self,
+        url: str,
+        *,
+        sample_bytes: int = 64 * 1024,
+        timeout_seconds: float = 6.0,
+    ) -> float:
+        """Measure a small range request without retaining the response body."""
+        if self.client is not None:
+            return await self._probe_with_client(
+                self.client, url, sample_bytes, timeout_seconds
+            )
+        async with self._new_client() as client:
+            return await self._probe_with_client(
+                client, url, sample_bytes, timeout_seconds
+            )
+
+    @staticmethod
+    async def _probe_with_client(
+        client: httpx.AsyncClient,
+        url: str,
+        sample_bytes: int,
+        timeout_seconds: float,
+    ) -> float:
+        sample_bytes = max(16 * 1024, sample_bytes)
+        started = time.perf_counter()
+        received = 0
+        try:
+            async with asyncio.timeout(max(1.0, timeout_seconds)):
+                async with client.stream(
+                    "GET",
+                    url,
+                    headers={"Range": f"bytes=0-{sample_bytes - 1}"},
+                ) as response:
+                    if response.status_code not in {200, 206}:
+                        response.raise_for_status()
+                    async for chunk in response.aiter_bytes(16 * 1024):
+                        received += len(chunk)
+                        if received >= sample_bytes:
+                            break
+        except (TimeoutError, httpx.HTTPError):
+            pass
+        elapsed = max(time.perf_counter() - started, 0.001)
+        return received / elapsed
 
     async def _download_with_retries(
         self,
@@ -284,8 +330,9 @@ class HttpRangeDownloader:
         exact_validators = (
             saved.etag == remote.etag and saved.last_modified == remote.last_modified
         )
-        validators_match = same_resource and same_size and (
-            exact_validators or (allow_weak and remote.expected_size is not None)
+        validators_match = same_size and (
+            (same_resource and exact_validators)
+            or (allow_weak and remote.expected_size is not None)
         )
         if not validators_match:
             return 0
