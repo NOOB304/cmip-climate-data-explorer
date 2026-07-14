@@ -6,7 +6,12 @@ from pathlib import Path
 import httpx
 import pytest
 
-from cmip_explorer.infrastructure.update import GitHubReleaseUpdater, UpdateError
+from cmip_explorer.infrastructure.update import (
+    GitHubReleaseUpdater,
+    ReleaseAsset,
+    ReleaseInfo,
+    UpdateError,
+)
 
 
 def _release(version: str, installer_size: int, *, checksum: bool = True) -> dict:
@@ -102,6 +107,64 @@ async def test_update_service_returns_none_for_current_version() -> None:
             "owner/repository", current_version="0.2.9", client=client
         )
         assert await updater.check() is None
+
+
+async def test_update_service_retries_checksum_request(tmp_path: Path) -> None:
+    installer = b"verified installer after reconnect"
+    digest = hashlib.sha256(installer).hexdigest()
+    installer_name = "CMIP-Climate-Explorer-0.3.0-x64-Setup.exe"
+    checksum_calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal checksum_calls
+        if request.url.path.endswith("SHA256SUMS.txt"):
+            checksum_calls += 1
+            if checksum_calls == 1:
+                return httpx.Response(503)
+            return httpx.Response(200, text=f"{digest}  {installer_name}\n")
+        if request.method == "HEAD":
+            return httpx.Response(
+                200,
+                headers={"Content-Length": str(len(installer))},
+            )
+        return httpx.Response(200, content=installer)
+
+    release = ReleaseInfo(
+        version="0.3.0",
+        tag_name="v0.3.0",
+        name="Version 0.3.0",
+        notes="",
+        page_url="https://github.test/releases/v0.3.0",
+        installer=ReleaseAsset(
+            installer_name,
+            "https://downloads.test/setup.exe",
+            len(installer),
+        ),
+        checksum=ReleaseAsset(
+            "SHA256SUMS.txt",
+            "https://downloads.test/SHA256SUMS.txt",
+        ),
+    )
+    reconnects: list[tuple[int, int, float]] = []
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(handler), follow_redirects=True
+    ) as client:
+        updater = GitHubReleaseUpdater(
+            "owner/repository",
+            current_version="0.2.9",
+            client=client,
+            reconnect_delays=(0,),
+        )
+        result = await updater.download(
+            release,
+            tmp_path,
+            reconnect=lambda attempt, maximum, delay, _error: reconnects.append(
+                (attempt, maximum, delay)
+            ),
+        )
+
+    assert result.read_bytes() == installer
+    assert reconnects == [(1, 1, 0)]
 
 
 async def test_update_service_rejects_release_without_checksum() -> None:

@@ -60,6 +60,11 @@ def test_main_window_contains_complete_workbench_navigation(qtbot, tmp_path: Pat
     assert settings_page.update_progress.maximum() == 1000
     assert settings_page.update_progress.value() == 500
     assert settings_page.update_progress.format() == "50.0 MiB / 100.0 MiB (50.0%)"
+    settings_page._show_update_retry(2, 8, 5)
+    retry_status = settings_page.update_status.text()
+    assert "网络连接中断" in retry_status
+    assert "5 秒后自动重连" in retry_status
+    assert "2/8" in retry_status
     assert window.minimumWidth() >= 1180
     database.dispose()
 

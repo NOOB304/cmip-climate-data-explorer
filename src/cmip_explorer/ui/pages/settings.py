@@ -36,6 +36,7 @@ from cmip_explorer.ui.async_runner import AsyncRunnable
 class SettingsPage(QWidget):
     saved = Signal(str)
     update_bytes_changed = Signal(object, object)
+    update_retry_changed = Signal(object, object, object)
 
     def __init__(self, path: Path, workflow: WorkflowService) -> None:
         super().__init__()
@@ -46,6 +47,10 @@ class SettingsPage(QWidget):
         self._workers: set[AsyncRunnable] = set()
         self.update_bytes_changed.connect(
             self._show_update_progress,
+            Qt.ConnectionType.QueuedConnection,
+        )
+        self.update_retry_changed.connect(
+            self._show_update_retry,
             Qt.ConnectionType.QueuedConnection,
         )
 
@@ -275,6 +280,9 @@ class SettingsPage(QWidget):
                     progress=lambda written, total: self.update_bytes_changed.emit(
                         written, total
                     ),
+                    reconnect=lambda attempt, maximum, delay, _error: (
+                        self.update_retry_changed.emit(attempt, maximum, delay)
+                    ),
                 )
             finally:
                 await updater.close()
@@ -368,12 +376,27 @@ try {
 
     def _update_failed(self, _trace: str, error: object) -> None:
         self._set_update_idle()
-        self.update_status.setText(f"更新失败: {error}")
-        QMessageBox.critical(self, "软件更新", f"无法完成更新操作。\n\n{error}")
+        self.update_status.setText("更新未完成，已保留下载进度，可再次重试。")
+        QMessageBox.critical(
+            self,
+            "软件更新",
+            "自动重连仍未能完成更新。已保留下载进度，再次点击检查更新会从断点继续。"
+            f"\n\n{error}",
+        )
+
+    def _show_update_retry(self, attempt: object, maximum: object, delay: object) -> None:
+        wait_seconds = float(delay)
+        wait_text = f"{wait_seconds:g}"
+        self.update_status.setText(
+            f"网络连接中断，{wait_text} 秒后自动重连"
+            f"（第 {int(attempt)}/{int(maximum)} 次）…"
+        )
 
     def _show_update_progress(self, written: object, total: object) -> None:
         downloaded = max(0, int(written or 0))
         expected = int(total) if total is not None else 0
+        if downloaded and self.update_progress.isVisible():
+            self.update_status.setText("正在下载更新包；网络中断时会自动重连并继续。")
         self.update_progress.setRange(0, 1000)
         if expected > 0:
             ratio = min(1.0, downloaded / expected)

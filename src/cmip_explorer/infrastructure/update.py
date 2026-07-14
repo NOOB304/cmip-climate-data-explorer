@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -9,7 +11,10 @@ from urllib.parse import unquote, urlsplit
 import httpx
 
 from cmip_explorer import __version__
-from cmip_explorer.infrastructure.download import HttpRangeDownloader
+from cmip_explorer.infrastructure.download import (
+    DEFAULT_RECONNECT_DELAYS,
+    HttpRangeDownloader,
+)
 
 UPDATE_REPOSITORY = "NOOB304/cmip-climate-data-explorer"
 GITHUB_API = "https://api.github.com"
@@ -53,6 +58,7 @@ class GitHubReleaseUpdater:
         current_version: str = __version__,
         channel: str = "stable",
         client: httpx.AsyncClient | None = None,
+        reconnect_delays: tuple[float, ...] = DEFAULT_RECONNECT_DELAYS,
     ) -> None:
         repository = repository.strip().strip("/")
         if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository):
@@ -62,6 +68,7 @@ class GitHubReleaseUpdater:
         self.repository = repository
         self.current_version = current_version
         self.channel = channel
+        self.reconnect_delays = tuple(max(0.0, delay) for delay in reconnect_delays)
         self._owns_client = client is None
         self.client = client or httpx.AsyncClient(
             timeout=httpx.Timeout(45, connect=15, read=30),
@@ -81,11 +88,10 @@ class GitHubReleaseUpdater:
         if self.channel == "stable":
             latest = await self._stable_release_without_api()
         else:
-            response = await self.client.get(
+            response = await self._get_with_retries(
                 f"{GITHUB_API}/repos/{self.repository}/releases",
                 params={"per_page": 20},
             )
-            response.raise_for_status()
             candidates = tuple(response.json())
             releases = [
                 parsed
@@ -101,11 +107,10 @@ class GitHubReleaseUpdater:
         return latest
 
     async def _stable_release_without_api(self) -> ReleaseInfo:
-        response = await self.client.get(
+        response = await self._get_with_retries(
             f"{GITHUB_WEB}/{self.repository}/releases/latest",
             headers={"Accept": "text/html"},
         )
-        response.raise_for_status()
         parts = urlsplit(str(response.url)).path.rstrip("/").split("/")
         if len(parts) < 2 or parts[-2] != "tag":
             raise UpdateError("GitHub 没有返回最新正式版标签")
@@ -137,13 +142,17 @@ class GitHubReleaseUpdater:
         release: ReleaseInfo,
         target_directory: Path,
         progress=None,
+        reconnect: Callable[[int, int, float, Exception], None] | None = None,
     ) -> Path:
         target_directory.mkdir(parents=True, exist_ok=True)
         if Path(release.installer.name).name != release.installer.name:
             raise UpdateError("Release 安装包文件名无效")
-        checksum = await self._expected_checksum(release)
+        checksum = await self._expected_checksum(release, reconnect=reconnect)
         target = target_directory / release.installer.name
-        downloader = HttpRangeDownloader(client=self.client)
+        downloader = HttpRangeDownloader(
+            client=self.client,
+            reconnect_delays=self.reconnect_delays,
+        )
         await downloader.download(
             release.installer.url,
             target,
@@ -151,12 +160,20 @@ class GitHubReleaseUpdater:
             expected_checksum=checksum,
             checksum_type="SHA256",
             progress=progress,
+            reconnect=reconnect,
         )
         return target
 
-    async def _expected_checksum(self, release: ReleaseInfo) -> str:
-        response = await self.client.get(release.checksum.url)
-        response.raise_for_status()
+    async def _expected_checksum(
+        self,
+        release: ReleaseInfo,
+        *,
+        reconnect: Callable[[int, int, float, Exception], None] | None = None,
+    ) -> str:
+        response = await self._get_with_retries(
+            release.checksum.url,
+            reconnect=reconnect,
+        )
         for line in response.text.splitlines():
             match = re.search(r"\b([0-9a-fA-F]{64})\b", line)
             if match and (
@@ -164,6 +181,28 @@ class GitHubReleaseUpdater:
             ):
                 return match.group(1).lower()
         raise UpdateError("Release 校验文件中没有找到安装包 SHA-256")
+
+    async def _get_with_retries(
+        self,
+        url: str,
+        *,
+        params: dict[str, object] | None = None,
+        headers: dict[str, str] | None = None,
+        reconnect: Callable[[int, int, float, Exception], None] | None = None,
+    ) -> httpx.Response:
+        for retry_index in range(len(self.reconnect_delays) + 1):
+            try:
+                response = await self.client.get(url, params=params, headers=headers)
+                response.raise_for_status()
+                return response
+            except httpx.HTTPError as exc:
+                if retry_index >= len(self.reconnect_delays) or not _is_retryable(exc):
+                    raise
+                delay = self.reconnect_delays[retry_index]
+                if reconnect:
+                    reconnect(retry_index + 1, len(self.reconnect_delays), delay, exc)
+                await asyncio.sleep(delay)
+        raise RuntimeError("unreachable update reconnect state")
 
 
 def _parse_release(payload: dict[str, Any]) -> ReleaseInfo | None:
@@ -222,3 +261,10 @@ def _version_key(value: str) -> tuple[int, int, int, int, str]:
     major, minor, patch = (int(match.group(index)) for index in range(1, 4))
     prerelease = match.group(4)
     return major, minor, patch, 1 if prerelease is None else 0, prerelease or ""
+
+
+def _is_retryable(error: httpx.HTTPError) -> bool:
+    if isinstance(error, httpx.HTTPStatusError):
+        status = error.response.status_code
+        return status in {408, 425, 429} or 500 <= status < 600
+    return isinstance(error, httpx.TransportError)

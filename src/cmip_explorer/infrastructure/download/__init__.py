@@ -1,4 +1,5 @@
 from .http import (
+    DEFAULT_RECONNECT_DELAYS,
     DownloadCancelled,
     DownloadControl,
     DownloadPaused,
@@ -7,6 +8,7 @@ from .http import (
 )
 
 __all__ = [
+    "DEFAULT_RECONNECT_DELAYS",
     "DownloadCancelled",
     "DownloadControl",
     "DownloadPaused",

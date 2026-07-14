@@ -11,12 +11,18 @@ from urllib.parse import urlsplit
 
 import httpx
 
+DEFAULT_RECONNECT_DELAYS = (1.0, 2.0, 5.0, 10.0, 20.0, 30.0, 60.0, 60.0)
+
 
 class DownloadPaused(Exception):
     pass
 
 
 class DownloadCancelled(Exception):
+    pass
+
+
+class DownloadIncompleteError(OSError):
     pass
 
 
@@ -44,10 +50,14 @@ class DownloadResult:
 
 class HttpRangeDownloader:
     def __init__(
-        self, client: httpx.AsyncClient | None = None, chunk_size: int = 1024 * 1024
+        self,
+        client: httpx.AsyncClient | None = None,
+        chunk_size: int = 1024 * 1024,
+        reconnect_delays: tuple[float, ...] = DEFAULT_RECONNECT_DELAYS,
     ) -> None:
         self.client = client
         self.chunk_size = chunk_size
+        self.reconnect_delays = tuple(max(0.0, delay) for delay in reconnect_delays)
 
     @staticmethod
     def _new_client() -> httpx.AsyncClient:
@@ -67,9 +77,10 @@ class HttpRangeDownloader:
         checksum_type: str = "SHA256",
         progress: Callable[[int, int | None], None] | None = None,
         control: DownloadControl | None = None,
+        reconnect: Callable[[int, int, float, Exception], None] | None = None,
     ) -> DownloadResult:
         if self.client is not None:
-            return await self._download_with_client(
+            return await self._download_with_retries(
                 self.client,
                 url,
                 target,
@@ -78,9 +89,10 @@ class HttpRangeDownloader:
                 checksum_type=checksum_type,
                 progress=progress,
                 control=control,
+                reconnect=reconnect,
             )
         async with self._new_client() as client:
-            return await self._download_with_client(
+            return await self._download_with_retries(
                 client,
                 url,
                 target,
@@ -89,7 +101,44 @@ class HttpRangeDownloader:
                 checksum_type=checksum_type,
                 progress=progress,
                 control=control,
+                reconnect=reconnect,
             )
+
+    async def _download_with_retries(
+        self,
+        client: httpx.AsyncClient,
+        url: str,
+        target: Path,
+        *,
+        expected_size: int | None,
+        expected_checksum: str | None,
+        checksum_type: str,
+        progress: Callable[[int, int | None], None] | None,
+        control: DownloadControl | None,
+        reconnect: Callable[[int, int, float, Exception], None] | None,
+    ) -> DownloadResult:
+        for retry_index in range(len(self.reconnect_delays) + 1):
+            try:
+                return await self._download_with_client(
+                    client,
+                    url,
+                    target,
+                    expected_size=expected_size,
+                    expected_checksum=expected_checksum,
+                    checksum_type=checksum_type,
+                    progress=progress,
+                    control=control,
+                )
+            except (DownloadPaused, DownloadCancelled):
+                raise
+            except Exception as exc:
+                if retry_index >= len(self.reconnect_delays) or not _is_retryable(exc):
+                    raise
+                delay = self.reconnect_delays[retry_index]
+                if reconnect:
+                    reconnect(retry_index + 1, len(self.reconnect_delays), delay, exc)
+                await _wait_before_reconnect(delay, control)
+        raise RuntimeError("unreachable download reconnect state")
 
     async def _download_with_client(
         self,
@@ -151,7 +200,7 @@ class HttpRangeDownloader:
 
         if remote.expected_size is not None and part.stat().st_size != remote.expected_size:
             actual_size = part.stat().st_size
-            raise OSError(
+            raise DownloadIncompleteError(
                 f"download size mismatch: expected {remote.expected_size}, got {actual_size}"
             )
         validation_digest = _digest(part, normalized_checksum)
@@ -220,3 +269,28 @@ def _same_resource(left: str, right: str) -> bool:
         and left_parts.path == right_parts.path
         and left_parts.query == right_parts.query
     )
+
+
+def _is_retryable(error: Exception) -> bool:
+    if isinstance(error, DownloadIncompleteError):
+        return True
+    if isinstance(error, httpx.HTTPStatusError):
+        status = error.response.status_code
+        return status in {408, 425, 429} or 500 <= status < 600
+    return isinstance(error, httpx.TransportError)
+
+
+async def _wait_before_reconnect(
+    delay: float, control: DownloadControl | None
+) -> None:
+    remaining = delay
+    while remaining > 0:
+        if control and control.cancel_requested:
+            raise DownloadCancelled()
+        while control and control.pause_requested:
+            if control.cancel_requested:
+                raise DownloadCancelled()
+            await asyncio.sleep(0.2)
+        interval = min(0.2, remaining)
+        await asyncio.sleep(interval)
+        remaining -= interval

@@ -10,6 +10,16 @@ from cmip_explorer.domain.models import AccessEndpoint, LogicalFile, Replica
 from cmip_explorer.infrastructure.download import DownloadControl, HttpRangeDownloader
 
 
+class _InterruptedStream(httpx.AsyncByteStream):
+    def __init__(self, request: httpx.Request, first_chunk: bytes) -> None:
+        self.request = request
+        self.first_chunk = first_chunk
+
+    async def __aiter__(self):
+        yield self.first_chunk
+        raise httpx.ReadError("connection reset", request=self.request)
+
+
 def test_download_candidates_prefer_https_and_exclude_plain_http() -> None:
     file = LogicalFile(
         logical_key="test",
@@ -154,6 +164,48 @@ async def test_range_download_resumes_matching_partial_file(tmp_path: Path) -> N
         await client.aclose()
     assert result.resumed_from == 4
     assert target.read_bytes() == payload
+
+
+async def test_interrupted_download_auto_reconnects_from_partial_file(
+    tmp_path: Path,
+) -> None:
+    payload = b"update-installer-with-resume"
+    first_chunk = payload[:8]
+    get_calls = 0
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal get_calls
+        headers = {"Content-Length": str(len(payload)), "ETag": "release-asset"}
+        if request.method == "HEAD":
+            return httpx.Response(200, headers=headers)
+        get_calls += 1
+        if get_calls == 1:
+            return httpx.Response(
+                200,
+                headers=headers,
+                stream=_InterruptedStream(request, first_chunk),
+            )
+        assert request.headers["Range"] == f"bytes={len(first_chunk)}-"
+        return httpx.Response(206, content=payload[len(first_chunk) :])
+
+    reconnects: list[tuple[int, int, float]] = []
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        result = await HttpRangeDownloader(
+            client=client,
+            chunk_size=4,
+            reconnect_delays=(0,),
+        ).download(
+            "https://example.test/update.exe",
+            tmp_path / "update.exe",
+            expected_size=len(payload),
+            reconnect=lambda attempt, maximum, delay, _error: reconnects.append(
+                (attempt, maximum, delay)
+            ),
+        )
+
+    assert result.path.read_bytes() == payload
+    assert result.resumed_from == len(first_chunk)
+    assert reconnects == [(1, 1, 0)]
 
 
 async def test_resume_keeps_partial_when_only_url_scheme_changes(tmp_path: Path) -> None:
