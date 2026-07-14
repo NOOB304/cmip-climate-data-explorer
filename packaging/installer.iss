@@ -1,5 +1,5 @@
 #define MyAppName "CMIP Climate Explorer"
-#define MyAppVersion "0.5.6"
+#define MyAppVersion "0.5.7"
 #define MyAppPublisher "CMIP Climate Explorer contributors"
 #define MyAppExeName "CMIPClimateExplorer.exe"
 

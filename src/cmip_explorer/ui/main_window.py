@@ -9,6 +9,7 @@ from PySide6.QtGui import QCloseEvent, QColor, QDesktopServices
 from PySide6.QtWidgets import (
     QComboBox,
     QFrame,
+    QGraphicsDropShadowEffect,
     QHBoxLayout,
     QHeaderView,
     QLabel,
@@ -106,9 +107,17 @@ class MainWindow(QMainWindow):
         connection.addWidget(dot)
         connection.addWidget(connection_text)
         connection.addStretch(1)
-        self.sidebar_version = QLabel(f"v{__version__}  |  Developed by Wei Heng")
+        self.sidebar_author = QLabel("Developed by Wei Noob304")
+        self.sidebar_author.setObjectName("SidebarAuthor")
+        author_glow = QGraphicsDropShadowEffect(self.sidebar_author)
+        author_glow.setBlurRadius(7.0)
+        author_glow.setColor(QColor(215, 226, 232, 90))
+        author_glow.setOffset(0, 0)
+        self.sidebar_author.setGraphicsEffect(author_glow)
+        self.sidebar_version = QLabel(f"v{__version__}")
         self.sidebar_version.setObjectName("SidebarVersion")
         footer_layout.addLayout(connection)
+        footer_layout.addWidget(self.sidebar_author)
         footer_layout.addWidget(self.sidebar_version)
         side_layout.addWidget(footer)
         self.stack = QStackedWidget()

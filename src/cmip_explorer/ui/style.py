@@ -31,9 +31,15 @@ QLabel#Brand {
     font-weight: 600;
 }
 QLabel#SidebarCaption, QLabel#SidebarVersion {
-    color: #8fa2aa;
+    color: #91a4ac;
     background: transparent;
     font-size: 9pt;
+}
+QLabel#SidebarAuthor {
+    color: #d6dfe3;
+    background: transparent;
+    font-size: 9pt;
+    font-weight: 500;
 }
 QLabel#ConnectionDot {
     color: #4cc38a;

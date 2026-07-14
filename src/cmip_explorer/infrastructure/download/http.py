@@ -70,7 +70,7 @@ class HttpRangeDownloader:
         return httpx.AsyncClient(
             timeout=httpx.Timeout(20.0, connect=10.0, read=15.0),
             follow_redirects=True,
-            headers={"User-Agent": "CMIP-Climate-Explorer/0.5.6"},
+            headers={"User-Agent": "CMIP-Climate-Explorer/0.5.7"},
         )
 
     async def download(

@@ -4,7 +4,12 @@ from types import SimpleNamespace
 from uuid import uuid4
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QAbstractSpinBox, QMessageBox, QProgressBar
+from PySide6.QtWidgets import (
+    QAbstractSpinBox,
+    QGraphicsDropShadowEffect,
+    QMessageBox,
+    QProgressBar,
+)
 
 import cmip_explorer.ui.pages.settings as settings_module
 from cmip_explorer import __version__
@@ -51,6 +56,9 @@ def test_main_window_contains_complete_workbench_navigation(qtbot, tmp_path: Pat
     assert window.navigation.item(0).text() == "数据下载"
     assert window.navigation.item(1).text() == "下载任务"
     assert window.navigation.item(2).text() == "文件处理"
+    window_icon = window.windowIcon().pixmap(32, 32).toImage()
+    assert window_icon.hasAlphaChannel()
+    assert window_icon.pixelColor(0, 0).alpha() == 0
     assert all(
         window.navigation.item(index).text() not in {"研究区", "处理计划"}
         for index in range(window.navigation.count())
@@ -58,9 +66,11 @@ def test_main_window_contains_complete_workbench_navigation(qtbot, tmp_path: Pat
     settings_page = window.stack.widget(5)
     assert settings_page.update_button.text() == "检查更新"
     assert settings_page.version_label.text() == f"当前版本 {__version__}"
-    assert window.sidebar_version.text() == (
-        f"v{__version__}  |  Developed by Wei Heng"
+    assert window.sidebar_author.text() == "Developed by Wei Noob304"
+    assert isinstance(
+        window.sidebar_author.graphicsEffect(), QGraphicsDropShadowEffect
     )
+    assert window.sidebar_version.text() == f"v{__version__}"
     settings_page._show_update_progress(50 * 1024**2, 100 * 1024**2)
     assert settings_page.update_progress.maximum() == 1000
     assert settings_page.update_progress.value() == 500
