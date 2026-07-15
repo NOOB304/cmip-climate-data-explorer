@@ -84,3 +84,13 @@ async def test_open_meteo_variables_use_clear_chinese_labels() -> None:
     assert by_id["temperature_2m_mean"].display_name == "2 米平均气温"
     assert by_id["precipitation_sum"].display_name == "总降水量"
     assert by_id["soil_moisture_0_to_10cm_mean"].units == "m³/m³"
+
+
+async def test_keyless_social_sources_offer_curated_chinese_variables() -> None:
+    world_bank = await discover_provider_variables("worldbank", "china-indicators")
+    who = await discover_provider_variables("who", "china-health")
+    worldpop = await discover_provider_variables("worldpop", "china-population-1km")
+
+    assert next(item for item in world_bank if item.id == "SP.POP.TOTL").display_name == "总人口"
+    assert next(item for item in who if item.id == "WHS6_102").display_name == "每万人医院床位数"
+    assert worldpop[0].display_name == "人口空间分布"

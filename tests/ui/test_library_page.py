@@ -26,12 +26,13 @@ def test_local_data_is_grouped_and_checked_groups_can_be_deleted(
     assert processed_group.path == processed
     assert processed_group.file_count == 2
     assert processed_group.contents == "2 个 TIF"
+    assert processed_group.years == "2020-2021"
     assert processed_group.size_bytes == 30
 
     page = LibraryPage(tmp_path)
     qtbot.addWidget(page)
     assert page.table.rowCount() == 2
-    assert page.table.columnCount() == 6
+    assert page.table.columnCount() == 7
     assert "4 个数据文件" in page.status.text()
     assert all("tas_2020.tif" not in page.table.item(row, 1).text() for row in range(2))
     assert not page.delete_button.isEnabled()
@@ -48,6 +49,7 @@ def test_local_data_is_grouped_and_checked_groups_can_be_deleted(
     )
     page.table.selectRow(downloaded_row)
     assert str(downloaded) in page.details.text()
+    assert "数据年份\n2020" in page.details.text()
     page.table.item(processed_row, 0).setCheckState(Qt.CheckState.Checked)
     assert str(processed) in page.details.text()
     assert page.delete_button.isEnabled()

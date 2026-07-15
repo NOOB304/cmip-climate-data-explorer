@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import shutil
 from collections import Counter, defaultdict
 from dataclasses import dataclass
@@ -32,6 +33,7 @@ class LocalDataGroup:
     category: str
     file_count: int
     contents: str
+    years: str
     size_bytes: int
     modified_at: float
 
@@ -47,10 +49,18 @@ def scan_local_data_groups(root: Path) -> tuple[LocalDataGroup, ...]:
         ".hdf",
         ".h5",
         ".he5",
+        ".json",
+        ".txt",
+        ".zip",
     }
     if root.exists():
         for path in root.rglob("*"):
-            if path.is_file() and path.suffix.casefold() in supported:
+            if (
+                path.is_file()
+                and path.suffix.casefold() in supported
+                and path.name.casefold()
+                not in {"processing_manifest.json", "manifest.json"}
+            ):
                 grouped[path.parent].append(path)
 
     results: list[LocalDataGroup] = []
@@ -67,12 +77,13 @@ def scan_local_data_groups(root: Path) -> tuple[LocalDataGroup, ...]:
         stats = [path.stat() for path in files]
         results.append(
             LocalDataGroup(
-                folder,
-                category,
-                len(files),
-                contents,
-                sum(item.st_size for item in stats),
-                max(item.st_mtime for item in stats),
+                path=folder,
+                category=category,
+                file_count=len(files),
+                contents=contents,
+                years=_data_years(files),
+                size_bytes=sum(item.st_size for item in stats),
+                modified_at=max(item.st_mtime for item in stats),
             )
         )
     results.sort(key=lambda item: (item.modified_at, str(item.path)), reverse=True)
@@ -122,9 +133,9 @@ class LibraryPage(QWidget):
         self.file_count_value = _add_metric(metrics_layout, "文件总数")
         self.storage_value = _add_metric(metrics_layout, "占用空间")
         self.recent_value = _add_metric(metrics_layout, "最近更新")
-        self.table = QTableWidget(0, 6)
+        self.table = QTableWidget(0, 7)
         self.table.setHorizontalHeaderLabels(
-            ("选择", "数据组", "来源", "包含文件", "总大小", "最近更新")
+            ("选择", "数据组", "来源", "包含文件", "数据年份", "总大小", "最近更新")
         )
         header = self.table.horizontalHeader()
         header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
@@ -133,6 +144,7 @@ class LibraryPage(QWidget):
         header.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
         header.setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
         header.setSectionResizeMode(5, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(6, QHeaderView.ResizeMode.ResizeToContents)
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
         self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
@@ -211,6 +223,7 @@ class LibraryPage(QWidget):
                 display_name,
                 group.category,
                 group.contents,
+                group.years,
                 _human_bytes(group.size_bytes),
                 datetime.fromtimestamp(group.modified_at).strftime("%Y-%m-%d %H:%M"),
             )
@@ -271,6 +284,7 @@ class LibraryPage(QWidget):
             f"完整路径\n{group.path}\n\n"
             f"来源\n{group.category}\n\n"
             f"包含文件\n{group.contents}\n\n"
+            f"数据年份\n{group.years}\n\n"
             f"总大小\n{_human_bytes(group.size_bytes)}\n\n"
             f"最近更新\n{datetime.fromtimestamp(group.modified_at):%Y-%m-%d %H:%M}"
         )
@@ -377,6 +391,22 @@ def _human_bytes(value: int) -> str:
             return f"{size:.1f} {unit}"
         size /= 1024
     return "未知"
+
+
+_YEAR_PATTERN = re.compile(r"(?<!\d)((?:18|19|20|21)\d{2})")
+
+
+def _data_years(files: list[Path]) -> str:
+    years = {
+        int(match)
+        for path in files
+        for match in _YEAR_PATTERN.findall(path.stem)
+    }
+    if not years:
+        return "未识别"
+    first = min(years)
+    last = max(years)
+    return str(first) if first == last else f"{first}-{last}"
 
 
 def _add_metric(layout: QHBoxLayout, title: str) -> QLabel:

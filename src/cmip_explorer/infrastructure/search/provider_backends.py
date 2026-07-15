@@ -45,7 +45,7 @@ class HttpProviderBackend:
         self.client = client or httpx.AsyncClient(
             timeout=httpx.Timeout(35, connect=12),
             follow_redirects=True,
-            headers={"User-Agent": "CMIP-Climate-Explorer/0.5.7"},
+            headers={"User-Agent": "CMIP-Climate-Explorer/0.5.8"},
         )
 
     async def detect_capabilities(self) -> BackendCapabilities:
@@ -416,6 +416,220 @@ class PowerBackend(HttpProviderBackend):
             note="可直接生成 CSV",
         )
         return _single_file_page(self.definition.id, file)
+
+    async def facets(
+        self, request: SearchRequest, names: tuple[str, ...]
+    ) -> dict[str, dict[str, int]]:
+        return {name: {} for name in names}
+
+
+class WorldBankBackend(HttpProviderBackend):
+    async def search(self, request: SearchRequest, cursor: str | int | None = None) -> SearchPage:
+        variable_id = (_constraint(request, "variable_id") or ("SP.POP.TOTL",))[0]
+        start_year = request.start_year or 1960
+        end_year = request.end_year or start_year
+        url = str(
+            httpx.URL(
+                f"{str(self.definition.base_url).rstrip('/')}/country/CHN/indicator/{variable_id}",
+                params={
+                    "date": f"{start_year}:{end_year}",
+                    "format": "json",
+                    "per_page": "20000",
+                },
+            )
+        )
+        file = _generated_file(
+            backend=self.definition,
+            request=request,
+            logical_key=f"worldbank:CHN:{variable_id}:{start_year}:{end_year}",
+            filename=f"WorldBank_CHN_{variable_id}_{start_year}-{end_year}.json",
+            variable_id=variable_id,
+            frequency="year",
+            url=url,
+            source_id="World Bank",
+            temporal_start=f"{start_year}-01-01",
+            temporal_end=f"{end_year}-12-31",
+            note="中国年度指标。可直接下载 JSON",
+            media_type="application/json",
+            file_format="JSON",
+        ).model_copy(
+            update={
+                "project": "World Bank Indicators",
+                "experiment_id": "中国",
+                "table_id": "年度指标",
+            }
+        )
+        return _single_file_page(self.definition.id, file)
+
+    async def facets(
+        self, request: SearchRequest, names: tuple[str, ...]
+    ) -> dict[str, dict[str, int]]:
+        return {name: {} for name in names}
+
+
+class WhoGhoBackend(HttpProviderBackend):
+    async def search(self, request: SearchRequest, cursor: str | int | None = None) -> SearchPage:
+        variable_id = (_constraint(request, "variable_id") or ("WHOSIS_000001",))[0]
+        start_year = request.start_year or 2000
+        end_year = request.end_year or start_year
+        url = str(
+            httpx.URL(
+                f"{str(self.definition.base_url).rstrip('/')}/{variable_id}",
+                params={
+                    "$filter": (
+                        "SpatialDim eq 'CHN' and "
+                        f"TimeDim ge {start_year} and TimeDim le {end_year}"
+                    ),
+                    "$format": "json",
+                },
+            )
+        )
+        file = _generated_file(
+            backend=self.definition,
+            request=request,
+            logical_key=f"who:CHN:{variable_id}:{start_year}:{end_year}",
+            filename=f"WHO_CHN_{variable_id}_{start_year}-{end_year}.json",
+            variable_id=variable_id,
+            frequency="year",
+            url=url,
+            source_id="WHO GHO",
+            temporal_start=f"{start_year}-01-01",
+            temporal_end=f"{end_year}-12-31",
+            note="中国健康指标。可直接下载 JSON",
+            media_type="application/json",
+            file_format="JSON",
+        ).model_copy(
+            update={
+                "project": "WHO Global Health Observatory",
+                "experiment_id": "中国",
+                "table_id": "年度健康指标",
+            }
+        )
+        return _single_file_page(self.definition.id, file)
+
+    async def facets(
+        self, request: SearchRequest, names: tuple[str, ...]
+    ) -> dict[str, dict[str, int]]:
+        return {name: {} for name in names}
+
+
+class WorldPopBackend(HttpProviderBackend):
+    def __init__(
+        self, definition: Backend, client: httpx.AsyncClient | None = None
+    ) -> None:
+        super().__init__(definition, client)
+        self._records: tuple[dict[str, Any], ...] | None = None
+
+    async def search(self, request: SearchRequest, cursor: str | int | None = None) -> SearchPage:
+        records = await self._load_records()
+        start_year = request.start_year or 2015
+        end_year = request.end_year or 2030
+        members: list[LogicalFile] = []
+        for record in records:
+            raw_year = str(record.get("popyear") or "")
+            if not raw_year.isdigit():
+                continue
+            year = int(raw_year)
+            if year < start_year or year > end_year:
+                continue
+            urls = record.get("files") or ()
+            url = next(
+                (str(value) for value in urls if str(value).startswith("https://")),
+                "",
+            )
+            if not url:
+                continue
+            filename = Path(urlsplit(url).path).name or f"chn_ppp_{year}.tif"
+            member = _generated_file(
+                backend=self.definition,
+                request=request,
+                logical_key=f"worldpop:CHN:population_count:{year}",
+                filename=filename,
+                variable_id="population_count",
+                frequency="year",
+                url=url,
+                source_id="WorldPop",
+                temporal_start=f"{year}-01-01",
+                temporal_end=f"{year}-12-31",
+                note="中国约 1 公里人口栅格。可直接下载 GeoTIFF",
+                media_type="image/tiff; application=geotiff",
+                file_format="GeoTIFF",
+            ).model_copy(
+                update={
+                    "project": "WorldPop Population Counts",
+                    "experiment_id": "中国",
+                    "table_id": "人口栅格",
+                    "grid_label": "30 arc-second",
+                    "nominal_resolution": "约 1 km",
+                    "raw_provenance": {
+                        **_generated_provenance(
+                            self.definition,
+                            url,
+                            "中国约 1 公里人口栅格。可直接下载 GeoTIFF",
+                            "GeoTIFF",
+                        ),
+                        "landing_url": str(record.get("url_summary") or url),
+                        "doi": record.get("doi"),
+                    },
+                }
+            )
+            members.append(member)
+        ordered = tuple(sorted(members, key=lambda item: item.temporal.start or ""))
+        if not ordered:
+            return SearchPage(
+                files=(),
+                raw_total_by_backend={self.definition.id: 0},
+                known_unique_count=0,
+                exact_total=True,
+                next_cursors={self.definition.id: None},
+                warnings=("所选年份没有可下载的中国人口栅格。",),
+            )
+        first = ordered[0]
+        first_year = (first.temporal.start or "")[:4]
+        last_year = (ordered[-1].temporal.end or "")[:4]
+        provenance = dict(first.raw_provenance)
+        provenance.update(
+            {
+                "access_note": f"多年系列。共 {len(ordered)} 个年度 GeoTIFF",
+                "series_file_count": len(ordered),
+                "file_format": "GeoTIFF",
+            }
+        )
+        series = first.model_copy(
+            update={
+                "logical_key": f"worldpop:CHN:population_count:{first_year}-{last_year}",
+                "filename": (
+                    f"WorldPop_CHN_population_{first_year}-{last_year}_"
+                    f"{len(ordered)}files.series"
+                ),
+                "dataset_id": f"worldpop:CHN:population_count:{first_year}-{last_year}",
+                "temporal": TemporalCoverage(
+                    start=first.temporal.start,
+                    end=ordered[-1].temporal.end,
+                    source="api",
+                ),
+                "replicas": (),
+                "series_members": ordered,
+                "raw_provenance": provenance,
+            }
+        )
+        return SearchPage(
+            files=(series,),
+            raw_total_by_backend={self.definition.id: len(ordered)},
+            known_unique_count=1,
+            exact_total=True,
+            next_cursors={self.definition.id: None},
+        )
+
+    async def _load_records(self) -> tuple[dict[str, Any], ...]:
+        if self._records is not None:
+            return self._records
+        response = await self.client.get(
+            str(self.definition.base_url), params={"iso3": "CHN"}
+        )
+        response.raise_for_status()
+        self._records = tuple(response.json().get("data", ()))
+        return self._records
 
     async def facets(
         self, request: SearchRequest, names: tuple[str, ...]
@@ -842,6 +1056,8 @@ def _generated_file(
     temporal_start: str,
     temporal_end: str,
     note: str,
+    media_type: str = "text/csv",
+    file_format: str = "CSV",
 ) -> LogicalFile:
     replica = Replica(
         data_node=urlsplit(url).hostname or backend.name,
@@ -851,7 +1067,7 @@ def _generated_file(
             AccessEndpoint(
                 url=url,
                 service="HTTPServer",
-                media_type="text/csv",
+                media_type=media_type,
                 secure=url.startswith("https://"),
             ),
         ),
@@ -872,12 +1088,19 @@ def _generated_file(
             source="api",
         ),
         replicas=(replica,),
-        raw_provenance={
-            "backend_id": backend.id,
-            "landing_url": url,
-            "access_note": note,
-        },
+        raw_provenance=_generated_provenance(backend, url, note, file_format),
     )
+
+
+def _generated_provenance(
+    backend: Backend, url: str, note: str, file_format: str
+) -> dict[str, Any]:
+    return {
+        "backend_id": backend.id,
+        "landing_url": url,
+        "access_note": note,
+        "file_format": file_format,
+    }
 
 
 def _single_file_page(backend_id: str, file: LogicalFile) -> SearchPage:

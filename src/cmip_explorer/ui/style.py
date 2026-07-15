@@ -30,12 +30,17 @@ QLabel#Brand {
     font-size: 12pt;
     font-weight: 600;
 }
-QLabel#SidebarCaption, QLabel#SidebarVersion {
+QLabel#SidebarCaption {
     color: #91a4ac;
     background: transparent;
     font-size: 9pt;
 }
 QLabel#SidebarAuthor {
+    color: #91a4ac;
+    background: transparent;
+    font-size: 8pt;
+}
+QLabel#SidebarVersion {
     color: #d6dfe3;
     background: transparent;
     font-size: 9pt;

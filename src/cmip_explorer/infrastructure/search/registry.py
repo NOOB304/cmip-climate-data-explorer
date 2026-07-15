@@ -14,6 +14,9 @@ from .provider_backends import (
     NoaaNceiBackend,
     OpenMeteoBackend,
     PowerBackend,
+    WhoGhoBackend,
+    WorldBankBackend,
+    WorldPopBackend,
 )
 
 
@@ -167,6 +170,30 @@ def _provider_registry(provider_id: str) -> BackendRegistry:
             priority=10,
             capabilities=capabilities,
         ),
+        "worldbank": Backend(
+            id="worldbank",
+            name="World Bank Indicators",
+            kind=BackendKind.GENERATED_API,
+            base_url="https://api.worldbank.org/v2",
+            priority=10,
+            capabilities=capabilities,
+        ),
+        "who": Backend(
+            id="who",
+            name="WHO Global Health Observatory",
+            kind=BackendKind.GENERATED_API,
+            base_url="https://ghoapi.azureedge.net/api",
+            priority=10,
+            capabilities=capabilities,
+        ),
+        "worldpop": Backend(
+            id="worldpop",
+            name="WorldPop China",
+            kind=BackendKind.GENERATED_API,
+            base_url="https://hub.worldpop.org/rest/data/pop/G2_CN_POP_R25A_1km",
+            priority=10,
+            capabilities=capabilities,
+        ),
     }
     try:
         definition = definitions[provider_id]
@@ -182,6 +209,12 @@ def _provider_registry(provider_id: str) -> BackendRegistry:
         backend = OpenMeteoBackend(definition)
     elif provider_id == "cmr":
         backend = CmrBackend(definition)
+    elif provider_id == "worldbank":
+        backend = WorldBankBackend(definition)
+    elif provider_id == "who":
+        backend = WhoGhoBackend(definition)
+    elif provider_id == "worldpop":
+        backend = WorldPopBackend(definition)
     else:
         backend = NoaaNceiBackend(definition)
     return BackendRegistry((backend,))

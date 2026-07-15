@@ -14,6 +14,9 @@ from cmip_explorer.infrastructure.search.provider_backends import (
     NoaaNceiBackend,
     OpenMeteoBackend,
     PowerBackend,
+    WhoGhoBackend,
+    WorldBankBackend,
+    WorldPopBackend,
 )
 
 
@@ -229,3 +232,86 @@ async def test_open_meteo_historical_facets_explain_era5_model_choices() -> None
 
     assert set(facets["source_id"]) == {"era5", "era5_land"}
     assert facets["frequency"] == {"day": 2}
+
+
+async def test_world_bank_and_who_generate_keyless_china_json_downloads() -> None:
+    world_bank = WorldBankBackend(_definition("worldbank", "https://api.worldbank.test/v2"))
+    who = WhoGhoBackend(_definition("who", "https://who.test/api"))
+    try:
+        world_bank_page = await world_bank.search(
+            SearchRequest(
+                provider_id="worldbank",
+                product_id="china-indicators",
+                facets=(FacetConstraint(name="variable_id", values=("SP.POP.TOTL",)),),
+                start_year=2000,
+                end_year=2020,
+            )
+        )
+        who_page = await who.search(
+            SearchRequest(
+                provider_id="who",
+                product_id="china-health",
+                facets=(FacetConstraint(name="variable_id", values=("WHOSIS_000001",)),),
+                start_year=2000,
+                end_year=2020,
+            )
+        )
+    finally:
+        await world_bank.close()
+        await who.close()
+
+    world_bank_file = world_bank_page.files[0]
+    world_bank_url = world_bank_file.replicas[0].endpoints[0].url
+    assert "/country/CHN/indicator/SP.POP.TOTL" in world_bank_url
+    assert "date=2000%3A2020" in world_bank_url
+    assert world_bank_file.raw_provenance["file_format"] == "JSON"
+    who_url = who_page.files[0].replicas[0].endpoints[0].url
+    assert "SpatialDim+eq+%27CHN%27" in who_url
+    assert "%24format=json" in who_url
+
+
+async def test_worldpop_groups_china_geotiffs_into_one_year_series() -> None:
+    payload = {
+        "data": [
+            {
+                "popyear": "2019",
+                "files": ["https://data.worldpop.test/CHN/chn_ppp_2019.tif"],
+                "url_summary": "https://hub.worldpop.test/2019",
+                "doi": "10.5258/test",
+            },
+            {
+                "popyear": "2020",
+                "files": ["https://data.worldpop.test/CHN/chn_ppp_2020.tif"],
+                "url_summary": "https://hub.worldpop.test/2020",
+                "doi": "10.5258/test",
+            },
+        ]
+    }
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(200, json=payload, request=request)
+        )
+    ) as client:
+        backend = WorldPopBackend(
+            _definition("worldpop", "https://hub.worldpop.test/rest/data"),
+            client=client,
+        )
+        page = await backend.search(
+            SearchRequest(
+                provider_id="worldpop",
+                product_id="china-population-1km",
+                facets=(
+                    FacetConstraint(name="variable_id", values=("population_count",)),
+                ),
+                start_year=2019,
+                end_year=2020,
+            )
+        )
+
+    assert len(page.files) == 1
+    series = page.files[0]
+    assert series.file_count == 2
+    assert series.temporal.start == "2019-01-01"
+    assert series.temporal.end == "2020-12-31"
+    assert series.raw_provenance["file_format"] == "GeoTIFF"
+    assert all(member.filename.endswith(".tif") for member in series.series_members)

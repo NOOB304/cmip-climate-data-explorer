@@ -171,6 +171,75 @@ PROVIDERS = (
         ),
         visible_filters=frozenset({"station"}),
     ),
+    ProviderDefinition(
+        id="worldbank",
+        name="World Bank",
+        icon_text="WB",
+        icon_color="#1f6f8b",
+        description=(
+            "世界银行公开指标 API。固定查询中国且无需账号或密钥。"
+            "下载结果为 JSON。适合人口、经济、教育、就业和公共服务分析。"
+        ),
+        products=(
+            ProviderProduct(
+                "china-indicators",
+                "中国社会经济指标",
+                "中国历年人口、经济、教育、就业与公共服务指标",
+                "选择一个中文指标和年份范围即可下载。缺失年份会保留为空值。",
+                1960,
+                _CURRENT_YEAR,
+                2000,
+                max(2000, _CURRENT_YEAR - 1),
+            ),
+        ),
+        visible_filters=frozenset(),
+    ),
+    ProviderDefinition(
+        id="who",
+        name="WHO GHO",
+        icon_text="WHO",
+        icon_color="#2b78b8",
+        description=(
+            "世界卫生组织全球健康观察站公开接口。固定查询中国且无需账号或密钥。"
+            "下载结果为 JSON。包含寿命、死亡率和医疗资源等指标。"
+        ),
+        products=(
+            ProviderProduct(
+                "china-health",
+                "中国健康指标",
+                "WHO 发布的中国年度健康与医疗资源指标",
+                "部分指标按性别分别记录。下载文件会保留 WHO 原始字段。",
+                1950,
+                _CURRENT_YEAR,
+                2000,
+                max(2000, _CURRENT_YEAR - 1),
+            ),
+        ),
+        visible_filters=frozenset(),
+    ),
+    ProviderDefinition(
+        id="worldpop",
+        name="WorldPop",
+        icon_text="WP",
+        icon_color="#2b7a4b",
+        description=(
+            "WorldPop 中国人口空间分布公开数据。无需账号或密钥。"
+            "每年一个约 1 公里 GeoTIFF。可作为多年系列一次下载。"
+        ),
+        products=(
+            ProviderProduct(
+                "china-population-1km",
+                "中国人口栅格",
+                "中国 2015 至 2030 年人口空间分布 GeoTIFF",
+                "单位为每个像元的人口数。坐标系为 WGS 84。",
+                2015,
+                2030,
+                2015,
+                2030,
+            ),
+        ),
+        visible_filters=frozenset(),
+    ),
 )
 
 
@@ -327,6 +396,64 @@ OPEN_METEO_CLIMATE_VARIABLES = (
 )
 
 
+WORLD_BANK_VARIABLES = (
+    ProviderVariable("SP.POP.TOTL", "Population, total", "总人口", "人", ("人口",)),
+    ProviderVariable("SP.POP.GROW", "Population growth", "人口增长率", "%"),
+    ProviderVariable("SP.URB.TOTL.IN.ZS", "Urban population", "城镇人口占比", "%"),
+    ProviderVariable("SP.DYN.CBRT.IN", "Birth rate, crude", "粗出生率", "每千人"),
+    ProviderVariable("SP.DYN.CDRT.IN", "Death rate, crude", "粗死亡率", "每千人"),
+    ProviderVariable("SP.DYN.LE00.IN", "Life expectancy at birth", "出生时预期寿命", "年"),
+    ProviderVariable("SL.UEM.TOTL.ZS", "Unemployment, total", "失业率", "%"),
+    ProviderVariable("SL.TLF.CACT.ZS", "Labor force participation rate", "劳动参与率", "%"),
+    ProviderVariable("NY.GDP.MKTP.CD", "GDP", "国内生产总值 (GDP)", "现价美元", ("经济总量",)),
+    ProviderVariable("NY.GDP.PCAP.CD", "GDP per capita", "人均国内生产总值", "现价美元"),
+    ProviderVariable("SI.POV.GINI", "Gini index", "基尼指数", "指数"),
+    ProviderVariable(
+        "SE.XPD.TOTL.GD.ZS",
+        "Government expenditure on education",
+        "教育支出占 GDP",
+        "%",
+    ),
+    ProviderVariable("SE.TER.ENRR", "School enrollment, tertiary", "高等教育毛入学率", "%"),
+    ProviderVariable("SH.XPD.CHEX.GD.ZS", "Current health expenditure", "卫生支出占 GDP", "%"),
+    ProviderVariable("SH.MED.BEDS.ZS", "Hospital beds", "每千人医院床位数", "每千人"),
+)
+
+
+WHO_VARIABLES = (
+    ProviderVariable(
+        "WHOSIS_000001",
+        "Life expectancy at birth",
+        "出生时预期寿命",
+        "年",
+        ("寿命",),
+    ),
+    ProviderVariable("WHOSIS_000002", "Healthy life expectancy at birth", "健康预期寿命", "年"),
+    ProviderVariable("MDG_0000000001", "Infant mortality rate", "婴儿死亡率", "每千活产"),
+    ProviderVariable(
+        "MDG_0000000007",
+        "Under-five mortality rate",
+        "五岁以下儿童死亡率",
+        "每千活产",
+    ),
+    ProviderVariable("MDG_0000000026", "Maternal mortality ratio", "孕产妇死亡率", "每十万活产"),
+    ProviderVariable("HWF_0001", "Medical doctors", "每万人医生数", "每万人"),
+    ProviderVariable("HWF_0002", "Medical doctors, number", "医生总数", "人"),
+    ProviderVariable("WHS6_102", "Hospital beds", "每万人医院床位数", "每万人"),
+)
+
+
+WORLDPOP_VARIABLES = (
+    ProviderVariable(
+        "population_count",
+        "Population count per grid cell",
+        "人口空间分布",
+        "人/像元",
+        ("人口栅格", "人口密度", "population"),
+    ),
+)
+
+
 CHINESE_NAMES = {
     "air_temperature": "空气温度",
     "capacity_of_soil_to_store_water": "土壤储水能力",
@@ -412,6 +539,12 @@ async def discover_provider_variables(
         return await _discover_cds_variables(product_id, client)
     if provider_id == "power":
         return await _discover_power_variables(product_id, client)
+    if provider_id == "worldbank":
+        return WORLD_BANK_VARIABLES
+    if provider_id == "who":
+        return WHO_VARIABLES
+    if provider_id == "worldpop":
+        return WORLDPOP_VARIABLES
     return ()
 
 

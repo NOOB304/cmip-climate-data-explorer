@@ -64,6 +64,7 @@ class SearchPage(QWidget):
         "情景",
         "频率",
         "数据表",
+        "文件格式",
         "覆盖时间",
         "文件数",
         "文件大小",
@@ -131,9 +132,9 @@ class SearchPage(QWidget):
         root = QVBoxLayout(self)
         root.setContentsMargins(24, 20, 24, 18)
         root.setSpacing(10)
-        title = QLabel("CMIP 数据下载")
+        title = QLabel("数据检索与下载")
         title.setObjectName("PageTitle")
-        subtitle = QLabel("从多个气候数据源检索长期数据系列，并加入可靠的断点续传队列")
+        subtitle = QLabel("从气候、环境与社会数据源检索长期数据系列，并加入可靠的断点续传队列")
         subtitle.setObjectName("PageSubtitle")
         root.addWidget(title)
         root.addWidget(subtitle)
@@ -269,11 +270,11 @@ class SearchPage(QWidget):
         header = self.table_widget.horizontalHeader()
         header.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
         for column, width in enumerate(
-            (42, 100, 55, 80, 65, 85, 50, 50, 105, 52, 65, 82, 180)
+            (42, 100, 55, 80, 65, 85, 50, 55, 65, 105, 52, 65, 82, 180)
         ):
             self.table_widget.setColumnWidth(column, width)
-        self.table_widget.setColumnHidden(11, True)
         self.table_widget.setColumnHidden(12, True)
+        self.table_widget.setColumnHidden(13, True)
         header.setStretchLastSection(False)
         pager = QHBoxLayout()
         pager.addStretch(1)
@@ -319,6 +320,7 @@ class SearchPage(QWidget):
         self._provider_id = provider_id
         provider = provider_definition(provider_id)
         self.provider_info.setText(provider.description)
+        self._configure_result_headers(provider_id)
         self.product.blockSignals(True)
         self.product.clear()
         for product in provider.products:
@@ -339,6 +341,16 @@ class SearchPage(QWidget):
             self._update_variable_matches()
         else:
             self._load_provider_variables()
+
+    def _configure_result_headers(self, provider_id: str) -> None:
+        labels = list(self.columns)
+        if provider_id in {"worldbank", "who", "worldpop"}:
+            labels[3] = "数据来源"
+            labels[4] = "空间分辨率"
+            labels[5] = "地区/分类"
+            labels[6] = "时间尺度"
+            labels[7] = "数据集"
+        self.table_widget.setHorizontalHeaderLabels(labels)
 
     def _product_changed(self) -> None:
         if self._provider_id == "esgf":
@@ -780,6 +792,7 @@ class SearchPage(QWidget):
                 _scenario_label(file.experiment_id or "-"),
                 _frequency_label(file.frequency or file.table_id or "-"),
                 file.table_id or "-",
+                _file_format(file),
                 _coverage(file),
                 str(file.file_count),
                 _human_bytes(file.size_bytes),
@@ -790,7 +803,7 @@ class SearchPage(QWidget):
                 item = QTableWidgetItem(value)
                 item.setData(Qt.ItemDataRole.UserRole, file.logical_key)
                 item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
-                if column == 8:
+                if column == 9:
                     raw_start = file.temporal.start or "未提供"
                     raw_end = file.temporal.end or "未提供"
                     item.setToolTip(f"原始时间范围\n{raw_start}\n至\n{raw_end}")
@@ -1078,6 +1091,7 @@ class SearchPage(QWidget):
                     "frequency",
                     "grid_label",
                     "nominal_resolution",
+                    "file_format",
                     "file_count",
                     "size_bytes",
                 ),
@@ -1086,6 +1100,7 @@ class SearchPage(QWidget):
             writer.writeheader()
             for file in self.files:
                 row = file.model_dump(mode="json")
+                row["file_format"] = _file_format(file)
                 row["file_count"] = file.file_count
                 writer.writerow(row)
         self.state.message.emit(f"已导出 {len(self.files)} 条数据记录")
@@ -1097,6 +1112,32 @@ def _coverage(file: LogicalFile) -> str:
     if start == "未知" and end == "未知":
         return "时间范围未提供"
     return f"{start} 至 {end}"
+
+
+def _file_format(file: LogicalFile) -> str:
+    formats = {_single_file_format(member) for member in file.download_files}
+    formats.discard("")
+    return " / ".join(sorted(formats)) or "未知"
+
+
+def _single_file_format(file: LogicalFile) -> str:
+    declared = str(file.raw_provenance.get("file_format") or "").strip()
+    if declared:
+        return declared
+    suffix = Path(file.filename).suffix.casefold()
+    return {
+        ".nc": "NetCDF",
+        ".nc4": "NetCDF",
+        ".tif": "GeoTIFF",
+        ".tiff": "GeoTIFF",
+        ".csv": "CSV",
+        ".json": "JSON",
+        ".txt": "TXT",
+        ".hdf": "HDF",
+        ".h5": "HDF5",
+        ".he5": "HDF-EOS5",
+        ".zip": "ZIP",
+    }.get(suffix, suffix.removeprefix(".").upper())
 
 
 def _format_temporal(value: str | None, frequency: str | None = None) -> str:

@@ -68,9 +68,14 @@ def test_main_window_contains_complete_workbench_navigation(qtbot, tmp_path: Pat
     assert settings_page.version_label.text() == f"当前版本 {__version__}"
     assert window.sidebar_author.text() == "Developed by Wei Noob304"
     assert isinstance(
-        window.sidebar_author.graphicsEffect(), QGraphicsDropShadowEffect
+        window.sidebar_version.graphicsEffect(), QGraphicsDropShadowEffect
     )
+    assert window.sidebar_author.graphicsEffect() is None
     assert window.sidebar_version.text() == f"v{__version__}"
+    footer_layout = window.sidebar_version.parentWidget().layout()
+    assert footer_layout.indexOf(window.sidebar_version) < footer_layout.indexOf(
+        window.sidebar_author
+    )
     settings_page._show_update_progress(50 * 1024**2, 100 * 1024**2)
     assert settings_page.update_progress.maximum() == 1000
     assert settings_page.update_progress.value() == 500
@@ -450,6 +455,7 @@ def test_variable_picker_groups_tables_and_does_not_force_a_frequency(
     facets = {constraint.name: constraint.values for constraint in request.facets}
     assert facets == {"variable_id": ("pr",)}
     assert "数据表" in search.columns
+    assert "文件格式" in search.columns
     database.dispose()
 
 
@@ -499,6 +505,19 @@ def test_data_source_tabs_switch_provider_specific_controls(
     assert search.start_year.minimum() == 1940
     assert search.end_year.maximum() >= 2026
     assert "不是未来预估" in search.provider_info.text()
+
+    world_bank_index = next(
+        index
+        for index in range(search.provider_tabs.count())
+        if search.provider_tabs.tabData(index) == "worldbank"
+    )
+    search.provider_tabs.setCurrentIndex(world_bank_index)
+    assert search.product.isVisibleTo(search)
+    assert not search.source.isVisibleTo(search)
+    assert not search.experiment.isVisibleTo(search)
+    assert search.start_year.minimum() == 1960
+    assert search.table_widget.horizontalHeaderItem(3).text() == "数据来源"
+    assert search.table_widget.horizontalHeaderItem(5).text() == "地区/分类"
     database.dispose()
 
 
@@ -612,7 +631,8 @@ def test_search_pagination_supports_previous_and_preserves_results_on_empty_page
         {"dkrz": 100},
     )
     assert search.previous_button.isEnabled()
-    assert search.table_widget.item(0, 12).text() == "second.nc"
+    assert search.table_widget.item(0, 8).text() == "NetCDF"
+    assert search.table_widget.item(0, 13).text() == "second.nc"
 
     requested = []
     monkeypatch.setattr(
@@ -633,7 +653,7 @@ def test_search_pagination_supports_previous_and_preserves_results_on_empty_page
         {"dkrz": 200},
     )
     assert search._page_number == 2
-    assert search.table_widget.item(0, 12).text() == "second.nc"
+    assert search.table_widget.item(0, 13).text() == "second.nc"
     assert not search.next_button.isEnabled()
     assert "已保留当前页面" in search.summary.text()
     database.dispose()
