@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 
 from PySide6.QtCore import QProcess, Qt, QThreadPool, QTimer, Signal
@@ -330,6 +331,7 @@ class SettingsPage(QWidget):
     def _update_downloaded(self, installer: Path) -> None:
         self._set_update_busy("更新包校验通过，正在静默安装并重启软件…")
         try:
+            install_directory = _current_install_directory()
             launcher = self._write_update_launcher(installer)
         except OSError as exc:
             self._set_update_idle()
@@ -351,6 +353,8 @@ class SettingsPage(QWidget):
                 str(os.getpid()),
                 "-Installer",
                 str(installer),
+                "-InstallDir",
+                str(install_directory),
                 "-LogPath",
                 str(installer.parent / "update-install.log"),
             ],
@@ -369,10 +373,17 @@ class SettingsPage(QWidget):
             """param(
     [Parameter(Mandatory=$true)][int]$ParentPid,
     [Parameter(Mandatory=$true)][string]$Installer,
+    [Parameter(Mandatory=$true)][string]$InstallDir,
     [Parameter(Mandatory=$true)][string]$LogPath
 )
 $ErrorActionPreference = 'Stop'
 try {
+    $InstallDir = [System.IO.Path]::GetFullPath($InstallDir)
+    $installedExecutable = Join-Path $InstallDir 'CMIPClimateExplorer.exe'
+    if (-not (Test-Path -LiteralPath $installedExecutable -PathType Leaf)) {
+        throw "当前安装目录无效: $InstallDir"
+    }
+    ("install_directory=" + $InstallDir) | Add-Content -LiteralPath $LogPath
     for ($attempt = 0; $attempt -lt 120; $attempt++) {
         if (-not (Get-Process -Id $ParentPid -ErrorAction SilentlyContinue)) { break }
         Start-Sleep -Milliseconds 250
@@ -386,11 +397,18 @@ try {
         '/FORCECLOSEAPPLICATIONS',
         '/UPDATE=1',
         '/STAGEDUPDATE=1',
+        '/DEFERRELAUNCH=1',
+        ('/DIR="' + $InstallDir + '"'),
+        ('/TARGETDIR="' + $InstallDir + '"'),
         ('/LOG="' + $LogPath + '"')
     )
     $process = Start-Process -FilePath $Installer -ArgumentList $installerArguments `
         -PassThru -Wait -WindowStyle Hidden
-    exit $process.ExitCode
+    if ($process.ExitCode -ne 0) {
+        throw "安装程序退出码: $($process.ExitCode)"
+    }
+    Start-Process -FilePath $installedExecutable -WorkingDirectory $InstallDir
+    exit 0
 } catch {
     ($_ | Out-String) | Add-Content -LiteralPath $LogPath
     exit 1
@@ -460,6 +478,15 @@ try {
         self.update_button.setEnabled(True)
         self.update_button.setText("检查更新")
         self.update_progress.hide()
+
+
+def _current_install_directory() -> Path:
+    if not getattr(sys, "frozen", False):
+        raise OSError("当前运行的不是已安装版本，不能执行自动更新")
+    executable = Path(sys.executable).resolve()
+    if executable.name.casefold() != "cmipclimateexplorer.exe":
+        raise OSError(f"无法识别当前程序位置: {executable}")
+    return executable.parent
 
 
 def _human_bytes(value: int) -> str:

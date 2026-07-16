@@ -213,6 +213,13 @@ def test_verified_update_runs_silently_and_restarts_application(
     started: list[tuple[str, list[str]]] = []
     timers: list[tuple[int, object]] = []
     monkeypatch.setattr(settings_module.os, "getpid", lambda: 4242)
+    install_directory = tmp_path / "installed application"
+    install_directory.mkdir()
+    monkeypatch.setattr(
+        settings_module,
+        "_current_install_directory",
+        lambda: install_directory,
+    )
     monkeypatch.setattr(
         settings_module,
         "QProcess",
@@ -249,6 +256,8 @@ def test_verified_update_runs_silently_and_restarts_application(
                 "4242",
                 "-Installer",
                 str(installer),
+                "-InstallDir",
+                str(install_directory),
                 "-LogPath",
                 str(tmp_path / "update-install.log"),
             ],
@@ -264,8 +273,25 @@ def test_verified_update_runs_silently_and_restarts_application(
     assert "'/FORCECLOSEAPPLICATIONS'" in launcher_script
     assert "'/UPDATE=1'" in launcher_script
     assert "'/STAGEDUPDATE=1'" in launcher_script
+    assert "'/DEFERRELAUNCH=1'" in launcher_script
+    assert "'/DIR=\"' + $InstallDir + '\"'" in launcher_script
+    assert "'/TARGETDIR=\"' + $InstallDir + '\"'" in launcher_script
+    assert "Join-Path $InstallDir 'CMIPClimateExplorer.exe'" in launcher_script
+    assert "Start-Process -FilePath $installedExecutable" in launcher_script
     assert "-Wait -WindowStyle Hidden" in launcher_script
     database.dispose()
+
+
+def test_update_targets_directory_of_current_frozen_executable(
+    tmp_path: Path, monkeypatch
+) -> None:
+    executable = tmp_path / "chosen install" / "CMIPClimateExplorer.exe"
+    executable.parent.mkdir()
+    executable.write_bytes(b"app")
+    monkeypatch.setattr(settings_module.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(settings_module.sys, "executable", str(executable))
+
+    assert settings_module._current_install_directory() == executable.parent
 
 
 def test_selecting_a_result_row_does_not_silently_queue_its_checkbox(qtbot, tmp_path: Path) -> None:

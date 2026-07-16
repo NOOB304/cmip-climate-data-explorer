@@ -191,10 +191,15 @@ def test_installer_supports_silent_update_and_old_updater_bridge() -> None:
 
     assert "HasCommandLineSwitch('/CLOSEAPPLICATIONS')" in installer_script
     assert "function IsStagedUpdate(): Boolean;" in installer_script
+    assert "function IsDeferredRelaunch(): Boolean;" in installer_script
+    assert "function ShouldRelaunchUpdate(): Boolean;" in installer_script
     assert "IsUpdateMode() and (not IsStagedUpdate())" in installer_script
     assert "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /CLOSEAPPLICATIONS " in installer_script
     assert "/FORCECLOSEAPPLICATIONS /UPDATE=1 /STAGEDUPDATE=1" in installer_script
+    assert "ExpandConstant('{param:TARGETDIR|}')" in installer_script
+    assert "TargetArguments" in installer_script
+    assert "GetDefaultInstallDir" in installer_script
     assert "ExpandConstant('{srcexe}')" in installer_script
     assert "CMIPClimateExplorerUpdate.cmd" in installer_script
-    assert 'Flags: nowait; Check: IsUpdateMode' in installer_script
+    assert 'Flags: nowait; Check: ShouldRelaunchUpdate' in installer_script
     assert "skipifsilent; Check: IsNotUpdateMode" in installer_script

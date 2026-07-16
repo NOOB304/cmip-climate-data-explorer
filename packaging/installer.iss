@@ -1,5 +1,5 @@
 #define MyAppName "CMIP Climate Explorer"
-#define MyAppVersion "0.5.8"
+#define MyAppVersion "0.5.9"
 #define MyAppPublisher "CMIP Climate Explorer contributors"
 #define MyAppExeName "CMIPClimateExplorer.exe"
 
@@ -44,7 +44,7 @@ Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: de
 
 [Run]
 Filename: "{app}\{#MyAppExeName}"; Description: "启动 {#MyAppName}"; Flags: nowait postinstall skipifsilent; Check: IsNotUpdateMode
-Filename: "{app}\{#MyAppExeName}"; Flags: nowait; Check: IsUpdateMode
+Filename: "{app}\{#MyAppExeName}"; Flags: nowait; Check: ShouldRelaunchUpdate
 
 [Code]
 function IsUpdateMode(): Boolean;
@@ -55,6 +55,16 @@ end;
 function IsNotUpdateMode(): Boolean;
 begin
   Result := not IsUpdateMode();
+end;
+
+function IsDeferredRelaunch(): Boolean;
+begin
+  Result := CompareText(ExpandConstant('{param:DEFERRELAUNCH|0}'), '1') = 0;
+end;
+
+function ShouldRelaunchUpdate(): Boolean;
+begin
+  Result := IsUpdateMode() and (not IsDeferredRelaunch());
 end;
 
 function IsStagedUpdate(): Boolean;
@@ -81,6 +91,8 @@ function InitializeSetup(): Boolean;
 var
   BridgePath: String;
   BridgeScript: String;
+  TargetDir: String;
+  TargetArguments: String;
   ErrorCode: Integer;
 begin
   Result := True;
@@ -93,12 +105,18 @@ begin
       (not IsUpdateMode())) then
   begin
     BridgePath := AddBackslash(GetTempDir()) + 'CMIPClimateExplorerUpdate.cmd';
+    TargetDir := ExpandConstant('{param:TARGETDIR|}');
+    TargetArguments := '';
+    if TargetDir <> '' then
+      TargetArguments :=
+        ' /DIR="' + TargetDir + '" /TARGETDIR="' + TargetDir + '"';
     BridgeScript :=
       '@echo off' + #13#10 +
       'ping 127.0.0.1 -n 4 >nul' + #13#10 +
       '"' + ExpandConstant('{srcexe}') +
       '" /SP- /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /CLOSEAPPLICATIONS ' +
-      '/FORCECLOSEAPPLICATIONS /UPDATE=1 /STAGEDUPDATE=1' + #13#10 +
+      '/FORCECLOSEAPPLICATIONS /UPDATE=1 /STAGEDUPDATE=1' +
+      TargetArguments + #13#10 +
       'del "%~f0"' + #13#10;
     if (not SaveStringToFile(BridgePath, BridgeScript, False)) or
        (not ShellExec(
@@ -117,8 +135,13 @@ begin
 end;
 
 function GetDefaultInstallDir(Param: String): String;
+var
+  RequestedDir: String;
 begin
-  if DirExists('D:\') then
+  RequestedDir := ExpandConstant('{param:TARGETDIR|}');
+  if RequestedDir <> '' then
+    Result := RequestedDir
+  else if DirExists('D:\') then
     Result := 'D:\Programs\CMIP Climate Explorer'
   else
     Result := ExpandConstant('{userdocs}\CMIP Climate Explorer');
